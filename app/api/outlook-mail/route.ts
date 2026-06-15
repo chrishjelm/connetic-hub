@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { sbSelect } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -147,7 +148,9 @@ export async function POST(req: Request) {
       const text = (m.body?.content || m.bodyPreview || "")
         .replace(/<[^>]+>/g, " ")
         .slice(0, 4000);
-      const prompt = `You are drafting a reply on behalf of the mailbox owner. Write a concise, professional, ready-to-send reply to the email below. Return ONLY the reply body text — no subject line, no "[Your name]" placeholders, no commentary.
+      const senderEmail = (m.from?.emailAddress?.address || "").toLowerCase();
+      const context = await peopleContext(senderEmail);
+      const prompt = `You are drafting a reply on behalf of the mailbox owner. Write a concise, professional, ready-to-send reply to the email below. Return ONLY the reply body text — no subject line, no "[Your name]" placeholders, no commentary.${context}
 
 From: ${m.from?.emailAddress?.address}
 Subject: ${m.subject}
@@ -320,6 +323,20 @@ ${compact}`;
     return fail("Unknown action", 400);
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function peopleContext(email: string): Promise<string> {
+  if (!email) return "";
+  try {
+    const rows = await sbSelect<{ name: string; role: string; notes: string }>(
+      `ch_people?email=eq.${encodeURIComponent(email)}&select=name,role,notes`
+    );
+    const p = rows[0];
+    if (!p || !p.notes) return "";
+    return `\n\nContext about the sender (use it to tailor tone and content): ${p.name || email}${p.role ? ` (${p.role})` : ""} — ${p.notes}`;
+  } catch {
+    return "";
   }
 }
 
