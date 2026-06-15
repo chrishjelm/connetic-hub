@@ -1,0 +1,149 @@
+import { NextResponse } from "next/server";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+const GRAPH = "https://graph.microsoft.com/v1.0/me";
+const CLIENT_ID =
+  process.env.AZURE_CLIENT_ID || process.env.DYNAMICS_CLIENT_ID || "";
+const CLIENT_SECRET =
+  process.env.AZURE_CLIENT_SECRET || process.env.DYNAMICS_CLIENT_SECRET || "";
+const TENANT =
+  process.env.AZURE_TENANT_ID || process.env.DYNAMICS_TENANT_ID || "organizations";
+
+async function getToken(): Promise<string> {
+  const res = await fetch(
+    `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        refresh_token: process.env.OUTLOOK_REFRESH_TOKEN!,
+        grant_type: "refresh_token",
+        scope: "offline_access User.Read Mail.ReadWrite Mail.Send",
+      }),
+    }
+  );
+  if (!res.ok) throw new Error(`auth ${res.status}: ${await res.text()}`);
+  return (await res.json()).access_token as string;
+}
+
+function h(t: string) {
+  return { Authorization: `Bearer ${t}`, "Content-Type": "application/json" };
+}
+
+function fail(msg: string, status = 500) {
+  return NextResponse.json({ success: false, error: msg }, { status });
+}
+
+// ---- GET: list a folder, or fetch one full message (?id=) ------
+export async function GET(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+    const folder = searchParams.get("folder") || "inbox";
+    const t = await getToken();
+
+    if (id) {
+      const r = await fetch(
+        `${GRAPH}/messages/${id}?$select=id,subject,from,toRecipients,ccRecipients,body,receivedDateTime,isRead,hasAttachments`,
+        { headers: h(t) }
+      );
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true, message: await r.json() });
+    }
+
+    const r = await fetch(
+      `${GRAPH}/mailFolders/${folder}/messages` +
+        `?$top=30&$orderby=receivedDateTime desc` +
+        `&$select=id,subject,from,bodyPreview,receivedDateTime,isRead,hasAttachments`,
+      { headers: h(t) }
+    );
+    if (!r.ok) return fail(await r.text(), r.status);
+    const data = await r.json();
+    return NextResponse.json({ success: true, messages: data.value || [] });
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+// ---- POST: actions (send, reply, archive, delete, markRead) ----
+export async function POST(req: Request) {
+  try {
+    const t = await getToken();
+    const b = await req.json();
+    const { action, id } = b;
+
+    if (action === "send") {
+      const to = String(b.to || "")
+        .split(",")
+        .map((a: string) => a.trim())
+        .filter(Boolean)
+        .map((address: string) => ({ emailAddress: { address } }));
+      if (!to.length) return fail("No recipient", 400);
+      const r = await fetch(`${GRAPH}/sendMail`, {
+        method: "POST",
+        headers: h(t),
+        body: JSON.stringify({
+          message: {
+            subject: b.subject || "(no subject)",
+            body: { contentType: "Text", content: b.content || "" },
+            toRecipients: to,
+          },
+          saveToSentItems: true,
+        }),
+      });
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "reply") {
+      if (!id) return fail("Missing id", 400);
+      const r = await fetch(`${GRAPH}/messages/${id}/reply`, {
+        method: "POST",
+        headers: h(t),
+        body: JSON.stringify({ comment: b.content || "" }),
+      });
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "archive") {
+      if (!id) return fail("Missing id", 400);
+      const r = await fetch(`${GRAPH}/messages/${id}/move`, {
+        method: "POST",
+        headers: h(t),
+        body: JSON.stringify({ destinationId: "archive" }),
+      });
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "delete") {
+      if (!id) return fail("Missing id", 400);
+      const r = await fetch(`${GRAPH}/messages/${id}`, {
+        method: "DELETE",
+        headers: h(t),
+      });
+      if (!r.ok && r.status !== 204) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "markRead") {
+      if (!id) return fail("Missing id", 400);
+      const r = await fetch(`${GRAPH}/messages/${id}`, {
+        method: "PATCH",
+        headers: h(t),
+        body: JSON.stringify({ isRead: true }),
+      });
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    return fail("Unknown action", 400);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
