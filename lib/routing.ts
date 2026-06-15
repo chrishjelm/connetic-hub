@@ -9,6 +9,15 @@
 // you fully trust what it's drafting.
 export const AUTO_SEND = false;
 
+// Unsubscribe behavior.
+// While false, the engine only LABELS unsubscribe candidates so you can
+// review them. Flip to true to let it one-click-unsubscribe from the
+// categories below.
+export const AUTO_UNSUBSCRIBE = false;
+
+// Which categories are eligible for unsubscribe handling.
+export const UNSUBSCRIBE_CATEGORIES = ["promotion", "spam", "newsletter"];
+
 // People the engine knows about.
 // Used for forwarding, and to help tell "a real person is waiting
 // on a reply" apart from automated/marketing mail.
