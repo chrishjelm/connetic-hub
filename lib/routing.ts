@@ -53,4 +53,4 @@ export const ARCHIVE_CATEGORIES = ["newsletter", "promotion", "spam"];
 export const URGENT_CATEGORIES = ["home", "invoice"];
 
 // How many of the newest inbox messages to scan per run.
-export const SCAN_LIMIT = 25;
+export const SCAN_LIMIT = 3;
