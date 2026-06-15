@@ -9,7 +9,7 @@ import {
 } from "@/lib/routing";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
