@@ -59,9 +59,28 @@ export default function HomePage() {
         </h1>
         <button onClick={load} style={btnGhost}>Refresh</button>
       </div>
-      <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 24 }}>
+      <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 18 }}>
         {new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
       </p>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const q = (new FormData(e.currentTarget).get("q") as string)?.trim();
+          if (q) window.location.href = `/ask?q=${encodeURIComponent(q)}`;
+        }}
+        style={{ marginBottom: 24 }}
+      >
+        <input
+          name="q"
+          placeholder="Ask or tell me to do something…"
+          style={{
+            width: "100%", padding: "13px 18px", borderRadius: 10, fontSize: 14,
+            background: "var(--surface-2)", color: "var(--text-primary)",
+            border: "1px solid var(--border)", outline: "none",
+          }}
+        />
+      </form>
 
       {err && <div style={{ ...card, padding: 16, color: "var(--amber)", fontSize: 13 }}>{err}</div>}
 
