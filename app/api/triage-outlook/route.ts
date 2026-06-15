@@ -11,7 +11,7 @@ import {
 } from "@/lib/routing";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const GRAPH = "https://graph.microsoft.com/v1.0/me";
 
