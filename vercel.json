@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/triage",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
