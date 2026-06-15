@@ -1,8 +1,6 @@
 {
   "crons": [
-    {
-      "path": "/api/triage",
-      "schedule": "*/15 * * * *"
-    }
+    { "path": "/api/triage", "schedule": "*/15 * * * *" },
+    { "path": "/api/triage-outlook", "schedule": "*/15 * * * *" }
   ]
 }
