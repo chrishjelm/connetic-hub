@@ -57,6 +57,7 @@ export default function Inbox() {
   const [cSubject, setCSubject] = useState("");
   const [cBody, setCBody] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const flash = (m: string) => {
@@ -159,6 +160,25 @@ export default function Inbox() {
       flash("Reply sent");
       setReplyOpen(false);
       setReplyText("");
+    }
+  }
+
+  async function suggestReply() {
+    if (!sel) return;
+    setSuggesting(true);
+    try {
+      const r = await fetch("/api/outlook-mail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "suggest", id: sel.id }),
+      });
+      const d = await r.json();
+      if (d.success) setReplyText(d.reply || "");
+      else flash(`Couldn't draft: ${d.error?.slice(0, 60)}`);
+    } catch (e) {
+      flash(String(e));
+    } finally {
+      setSuggesting(false);
     }
   }
 
@@ -431,14 +451,33 @@ export default function Inbox() {
                   }}
                 >
                   <div
-                    style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 8,
+                    }}
                   >
-                    Reply to {senderName(sel)}
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      Reply to {senderName(sel)}
+                    </span>
+                    <button
+                      onClick={suggestReply}
+                      disabled={suggesting}
+                      style={{
+                        ...btnGhost,
+                        padding: "5px 11px",
+                        fontSize: 12,
+                        color: "var(--accent)",
+                      }}
+                    >
+                      {suggesting ? "Drafting…" : "✨ Suggest reply"}
+                    </button>
                   </div>
                   <textarea
                     value={replyText}
                     onChange={(e) => setReplyText(e.target.value)}
-                    placeholder="Write your reply…"
+                    placeholder="Write your reply, or let Claude suggest one…"
                     style={textareaStyle}
                   />
                   <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
