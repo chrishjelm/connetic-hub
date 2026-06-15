@@ -10,10 +10,10 @@ const TENANT =
   process.env.AZURE_TENANT_ID || process.env.DYNAMICS_TENANT_ID || "organizations";
 
 const REDIRECT_URI = "https://connetic-hub.vercel.app/api/outlook-auth";
-// Delegated scopes: mail, calendar (read+write for scheduling), and files
-// (OneDrive/SharePoint), plus offline_access for a durable refresh token.
+// Delegated scopes: mail, calendar (read+write), files + SharePoint sites,
+// and people lookup, plus offline_access for a durable refresh token.
 const SCOPES =
-  "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Files.Read.All";
+  "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Files.Read.All Sites.Read.All People.Read";
 
 export const dynamic = "force-dynamic";
 
