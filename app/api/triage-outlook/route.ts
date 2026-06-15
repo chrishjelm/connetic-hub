@@ -65,21 +65,32 @@ type GraphMessage = {
   from: string;
   body: string;
   categories: string[];
-  unsubscribeEnabled: boolean;
-  unsubscribeData: string[];
+  listUnsubscribe: string;
+  listUnsubscribePost: string;
 };
 
 async function listUntriaged(token: string): Promise<GraphMessage[]> {
   // Pull newest inbox messages that aren't already tagged Triaged.
+  // internetMessageHeaders carries List-Unsubscribe / List-Unsubscribe-Post.
   const url =
     `${GRAPH}/mailFolders/inbox/messages` +
     `?$top=${SCAN_LIMIT}&$orderby=receivedDateTime desc` +
-    `&$select=id,subject,bodyPreview,from,body,categories,unsubscribeEnabled,unsubscribeData`;
+    `&$select=id,subject,bodyPreview,from,body,categories,internetMessageHeaders`;
   const res = await fetch(url, { headers: authHeaders(token) });
   if (!res.ok) {
     throw new Error(`List failed: ${res.status} ${await res.text()}`);
   }
   const data = await res.json();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const findHeader = (headers: any[], name: string): string => {
+    if (!Array.isArray(headers)) return "";
+    const h = headers.find(
+      (x) => (x.name || "").toLowerCase() === name.toLowerCase()
+    );
+    return h ? h.value || "" : "";
+  };
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data.value || [])
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -92,27 +103,28 @@ async function listUntriaged(token: string): Promise<GraphMessage[]> {
       from: m.from?.emailAddress?.address || "",
       body: (m.body?.content || "").replace(/<[^>]+>/g, " ").slice(0, 4000),
       categories: m.categories || [],
-      unsubscribeEnabled: !!m.unsubscribeEnabled,
-      unsubscribeData: m.unsubscribeData || [],
+      listUnsubscribe: findHeader(m.internetMessageHeaders, "List-Unsubscribe"),
+      listUnsubscribePost: findHeader(
+        m.internetMessageHeaders,
+        "List-Unsubscribe-Post"
+      ),
     }));
 }
 
 // ---- Unsubscribe (safe, standards-based) -----------------------
-// Graph surfaces the List-Unsubscribe info via unsubscribeEnabled +
-// unsubscribeData. We only auto-act on an https one-click URL.
+// Parses the List-Unsubscribe header. Only AUTO-acts via the RFC 8058
+// one-click POST flow; anything else is reported for manual review.
 async function handleUnsubscribe(
   msg: GraphMessage
 ): Promise<{ acted: boolean; note: string } | null> {
-  if (!msg.unsubscribeEnabled || !msg.unsubscribeData.length) return null;
+  if (!msg.listUnsubscribe) return null;
 
-  const https = msg.unsubscribeData.find((u) =>
-    u.toLowerCase().startsWith("http")
-  );
-  const mailto = msg.unsubscribeData.find((u) =>
-    u.toLowerCase().startsWith("mailto:")
-  );
+  const urls = [...msg.listUnsubscribe.matchAll(/<([^>]+)>/g)].map((m) => m[1]);
+  const https = urls.find((u) => u.toLowerCase().startsWith("http"));
+  const mailto = urls.find((u) => u.toLowerCase().startsWith("mailto:"));
+  const oneClick = /one-click/i.test(msg.listUnsubscribePost || "");
 
-  if (AUTO_UNSUBSCRIBE && https) {
+  if (AUTO_UNSUBSCRIBE && https && oneClick) {
     try {
       const r = await fetch(https, {
         method: "POST",
@@ -127,7 +139,9 @@ async function handleUnsubscribe(
     }
   }
 
-  if (https) return { acted: false, note: "unsubscribe link available (review mode)" };
+  if (https && oneClick)
+    return { acted: false, note: "one-click available (review mode)" };
+  if (https) return { acted: false, note: "manual unsubscribe link only" };
   if (mailto) return { acted: false, note: "email-based unsubscribe only" };
   return null;
 }
