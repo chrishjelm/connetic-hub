@@ -99,6 +99,47 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "suggest") {
+      if (!id) return fail("Missing id", 400);
+      const mr = await fetch(
+        `${GRAPH}/messages/${id}?$select=subject,from,body,bodyPreview`,
+        { headers: h(t) }
+      );
+      if (!mr.ok) return fail(await mr.text(), mr.status);
+      const m = await mr.json();
+      const text = (m.body?.content || m.bodyPreview || "")
+        .replace(/<[^>]+>/g, " ")
+        .slice(0, 4000);
+      const prompt = `You are drafting a reply on behalf of the mailbox owner. Write a concise, professional, ready-to-send reply to the email below. Return ONLY the reply body text — no subject line, no "[Your name]" placeholders, no commentary.
+
+From: ${m.from?.emailAddress?.address}
+Subject: ${m.subject}
+Body: ${text}`;
+      const ar = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_API_KEY!,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 600,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      if (!ar.ok) return fail(await ar.text(), ar.status);
+      const ad = await ar.json();
+      const reply = (ad.content || [])
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .filter((x: any) => x.type === "text")
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((x: any) => x.text)
+        .join("")
+        .trim();
+      return NextResponse.json({ success: true, reply });
+    }
+
     if (action === "reply") {
       if (!id) return fail("Missing id", 400);
       const r = await fetch(`${GRAPH}/messages/${id}/reply`, {
