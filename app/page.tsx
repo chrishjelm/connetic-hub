@@ -1,328 +1,185 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 
-type PMsg = {
-  id: string;
-  from: string;
-  fromName?: string;
-  subject: string;
-  preview: string;
-  receivedDateTime?: string;
-  priority: "high" | "medium" | "low" | string;
-  reason?: string;
-  unsub?: { available: boolean; oneClick: boolean; url: string; mailto: string };
-};
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Home = any;
 
-const BUCKETS: { key: string; label: string; color: string; blurb: string }[] = [
-  { key: "high", label: "High priority", color: "var(--amber)", blurb: "Handle these first" },
-  { key: "medium", label: "Medium", color: "var(--blue)", blurb: "Worth a look" },
-  { key: "low", label: "Low", color: "var(--text-muted)", blurb: "Noise — clear when you like" },
-];
-
-function when(iso?: string): string {
+function timeOf(iso?: string, allDay?: boolean): string {
   if (!iso) return "";
+  if (allDay) return "All day";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "";
-  const sameDay = d.toDateString() === new Date().toDateString();
-  return sameDay
-    ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-    : d.toLocaleDateString([], { month: "short", day: "numeric" });
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-export default function Dashboard() {
-  const [msgs, setMsgs] = useState<PMsg[] | null>(null);
+function dayLabel(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const today = new Date();
+  const tom = new Date();
+  tom.setDate(today.getDate() + 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === tom.toDateString()) return "Tomorrow";
+  return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+}
+
+export default function HomePage() {
+  const [data, setData] = useState<Home | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
 
-  const flash = (m: string) => {
-    setToast(m);
-    setTimeout(() => setToast(null), 2500);
-  };
-
-  const load = useCallback(() => {
-    setMsgs(null);
+  function load() {
+    setData(null);
     setErr(null);
-    fetch("/api/outlook-mail", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "prioritize" }),
-    })
+    fetch("/api/home")
       .then((r) => r.json())
-      .then((d) => {
-        if (d.success) setMsgs(d.messages || []);
-        else setErr(d.error || "Could not sort inbox");
-      })
+      .then((d) => (d.success ? setData(d) : setErr(d.error || "Failed to load")))
       .catch((e) => setErr(String(e)));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  async function act(action: string, m: PMsg) {
-    setBusy(m.id + action);
-    try {
-      const extra =
-        action === "unsubscribe" && m.unsub?.url ? { url: m.unsub.url } : {};
-      const r = await fetch("/api/outlook-mail", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, id: m.id, ...extra }),
-      });
-      const d = await r.json();
-      if (d.success) {
-        flash(action === "archive" ? "Archived" : "Unsubscribe sent");
-        if (action === "archive")
-          setMsgs((p) => (p ? p.filter((x) => x.id !== m.id) : p));
-      } else {
-        flash(`Failed: ${(d.error || "").slice(0, 60)}`);
-      }
-    } catch (e) {
-      flash(String(e));
-    } finally {
-      setBusy(null);
-    }
   }
 
-  const counts = {
-    high: (msgs || []).filter((m) => m.priority === "high").length,
-    medium: (msgs || []).filter((m) => m.priority === "medium").length,
-    low: (msgs || []).filter((m) => m.priority === "low").length,
-  };
+  useEffect(load, []);
+
+  const greeting = (() => {
+    const h = new Date().getHours();
+    if (h < 12) return "Good morning";
+    if (h < 18) return "Good afternoon";
+    return "Good evening";
+  })();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cal: any[] = data?.calendar || [];
+  const todayEvents = cal.filter((c) => dayLabel(c.start) === "Today");
+  const laterEvents = cal.filter((c) => dayLabel(c.start) !== "Today");
 
   return (
-    <div style={{ padding: "32px 36px", maxWidth: 1000 }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          marginBottom: 26,
-        }}
-      >
-        <div>
-          <h1
-            style={{
-              fontSize: 22,
-              fontWeight: 600,
-              color: "var(--text-primary)",
-              marginBottom: 4,
-            }}
-          >
-            Priorities
-          </h1>
-          <p style={{ fontSize: 14, color: "var(--text-secondary)" }}>
-            {msgs === null
-              ? "Sorting your inbox…"
-              : `${counts.high} high · ${counts.medium} medium · ${counts.low} low`}
-          </p>
+    <div style={{ padding: "32px 36px", maxWidth: 1100 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <h1 style={{ fontSize: 24, fontWeight: 600, color: "var(--text-primary)" }}>
+          {greeting}, Chris
+        </h1>
+        <button onClick={load} style={btnGhost}>Refresh</button>
+      </div>
+      <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 24 }}>
+        {new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
+      </p>
+
+      {err && <div style={{ ...card, padding: 16, color: "var(--amber)", fontSize: 13 }}>{err}</div>}
+
+      <div style={{ ...card, padding: "18px 22px", marginBottom: 22, borderLeft: "3px solid var(--accent)" }}>
+        <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--accent)", marginBottom: 8, fontWeight: 600 }}>
+          Your brief
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <a href="/inbox" style={btnGhostLink}>
-            Open inbox
-          </a>
-          <button onClick={load} style={btnGhost}>
-            Re-prioritize
-          </button>
+        <div style={{ fontSize: 15, lineHeight: 1.6, color: "var(--text-primary)" }}>
+          {data ? (data.brief || "Nothing pressing right now.") : "Putting your day together…"}
         </div>
       </div>
 
-      {err && (
-        <div
-          style={{
-            ...card,
-            padding: "16px 20px",
-            color: "var(--amber)",
-            fontSize: 13,
-          }}
-        >
-          {err}
+      {data?.quick_links?.length > 0 && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {data.quick_links.map((l: any) => (
+            <a key={l.url} href={l.url} target="_blank" rel="noreferrer" style={quickLink}>
+              {l.label}
+            </a>
+          ))}
         </div>
       )}
 
-      {msgs === null && !err && (
-        <div
-          style={{
-            ...card,
-            padding: "40px 20px",
-            textAlign: "center",
-            color: "var(--text-muted)",
-            fontSize: 14,
-          }}
-        >
-          ✨ Reading your inbox and ranking by priority…
-        </div>
-      )}
-
-      {msgs && msgs.length === 0 && (
-        <div
-          style={{
-            ...card,
-            padding: "40px 20px",
-            textAlign: "center",
-            color: "var(--text-muted)",
-            fontSize: 14,
-          }}
-        >
-          Inbox zero. Nothing to triage.
-        </div>
-      )}
-
-      {msgs &&
-        msgs.length > 0 &&
-        BUCKETS.map((b) => {
-          const items = msgs.filter((m) => m.priority === b.key);
-          if (!items.length) return null;
-          return (
-            <div key={b.key} style={{ marginBottom: 26 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 9,
-                  marginBottom: 10,
-                }}
-              >
-                <span
-                  style={{
-                    width: 9,
-                    height: 9,
-                    borderRadius: "50%",
-                    background: b.color,
-                  }}
-                />
-                <span
-                  style={{
-                    fontSize: 14,
-                    fontWeight: 600,
-                    color: "var(--text-primary)",
-                  }}
-                >
-                  {b.label}
-                </span>
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  {items.length} · {b.blurb}
-                </span>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        <section style={{ ...card, padding: 20 }}>
+          <h2 style={sectionH}>Today</h2>
+          {!data && <Muted>Loading…</Muted>}
+          {data && todayEvents.length === 0 && <Muted>No meetings today.</Muted>}
+          {todayEvents.map((e, i) => (
+            <div key={i} style={rowStyle(i === todayEvents.length - 1)}>
+              <div style={{ width: 62, flexShrink: 0, fontSize: 12, color: "var(--text-secondary)" }}>
+                {timeOf(e.start, e.allDay)}
               </div>
-
-              <div style={{ ...card, overflow: "hidden" }}>
-                {items.map((m, i) => (
-                  <div
-                    key={m.id}
-                    style={{
-                      padding: "13px 18px",
-                      borderBottom:
-                        i === items.length - 1
-                          ? "none"
-                          : "1px solid var(--border)",
-                      borderLeft: `3px solid ${b.color}`,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 14,
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: 10,
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: "var(--text-primary)",
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                        >
-                          {m.fromName || m.from}
-                        </span>
-                        <span
-                          style={{
-                            fontSize: 11,
-                            color: "var(--text-muted)",
-                            flexShrink: 0,
-                          }}
-                        >
-                          {when(m.receivedDateTime)}
-                        </span>
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-secondary)",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {m.subject || "(no subject)"}
-                      </div>
-                      {m.reason && (
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: "var(--text-muted)",
-                            fontStyle: "italic",
-                            marginTop: 2,
-                          }}
-                        >
-                          {m.reason}
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                      <button
-                        onClick={() => act("archive", m)}
-                        disabled={busy !== null}
-                        style={miniBtn}
-                      >
-                        {busy === m.id + "archive" ? "…" : "Archive"}
-                      </button>
-                      {m.unsub?.available && (
-                        <button
-                          onClick={() => act("unsubscribe", m)}
-                          disabled={busy !== null}
-                          style={miniBtn}
-                        >
-                          {busy === m.id + "unsubscribe" ? "…" : "Unsub"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>{e.subject}</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {e.online ? "Teams" : e.location || ""}
+                  {e.attendees?.length ? ` · ${e.attendees.join(", ")}` : ""}
+                </div>
               </div>
             </div>
-          );
-        })}
+          ))}
+          {laterEvents.length > 0 && (
+            <>
+              <h2 style={{ ...sectionH, marginTop: 18 }}>Coming up</h2>
+              {laterEvents.map((e, i) => (
+                <div key={i} style={rowStyle(i === laterEvents.length - 1)}>
+                  <div style={{ width: 86, flexShrink: 0, fontSize: 11, color: "var(--text-secondary)" }}>
+                    {dayLabel(e.start)} {timeOf(e.start, e.allDay)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>{e.subject}</div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </section>
 
-      {toast && (
-        <div
-          style={{
-            position: "fixed",
-            bottom: 24,
-            left: "50%",
-            transform: "translateX(-50%)",
-            background: "var(--text-primary)",
-            color: "var(--bg)",
-            padding: "10px 18px",
-            borderRadius: 8,
-            fontSize: 13,
-            fontWeight: 500,
-            zIndex: 50,
-          }}
-        >
-          {toast}
-        </div>
-      )}
+        <section style={{ ...card, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h2 style={sectionH}>What needs you</h2>
+            <a href="/inbox" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>Inbox →</a>
+          </div>
+          {!data && <Muted>Loading…</Muted>}
+          {data && data.priority?.length === 0 && <Muted>Nothing urgent. Nice.</Muted>}
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {data?.priority?.map((m: any, i: number) => (
+            <div key={m.id} style={rowStyle(i === data.priority.length - 1)}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {m.from}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {m.subject}
+                </div>
+                {m.reason && <div style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>{m.reason}</div>}
+              </div>
+            </div>
+          ))}
+        </section>
+
+        <section style={{ ...card, padding: 20 }}>
+          <h2 style={sectionH}>Recent documents</h2>
+          {!data && <Muted>Loading…</Muted>}
+          {data && data.docs?.length === 0 && <Muted>No recent files.</Muted>}
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {data?.docs?.map((f: any, i: number) => (
+            <a key={i} href={f.url} target="_blank" rel="noreferrer" style={{ ...rowStyle(i === data.docs.length - 1), textDecoration: "none" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.name}</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{dayLabel(f.modified)}</div>
+              </div>
+            </a>
+          ))}
+        </section>
+
+        <section style={{ ...card, padding: 20 }}>
+          <h2 style={sectionH}>You recently sent</h2>
+          {!data && <Muted>Loading…</Muted>}
+          {data && data.sent?.length === 0 && <Muted>Nothing sent recently.</Muted>}
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {data?.sent?.map((m: any, i: number) => (
+            <div key={i} style={rowStyle(i === data.sent.length - 1)}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.subject || "(no subject)"}</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>to {m.to} · {dayLabel(m.sent)}</div>
+              </div>
+            </div>
+          ))}
+        </section>
+      </div>
     </div>
   );
+}
+
+function Muted({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "8px 0" }}>{children}</div>;
 }
 
 const card: React.CSSProperties = {
@@ -330,8 +187,25 @@ const card: React.CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: 12,
 };
+const sectionH: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: "var(--text-primary)",
+  marginBottom: 10,
+  textTransform: "uppercase",
+  letterSpacing: 0.4,
+};
+function rowStyle(last: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    gap: 12,
+    alignItems: "center",
+    padding: "10px 0",
+    borderBottom: last ? "none" : "1px solid var(--border)",
+  };
+}
 const btnGhost: React.CSSProperties = {
-  padding: "9px 16px",
+  padding: "8px 15px",
   borderRadius: 8,
   fontSize: 13,
   fontWeight: 500,
@@ -340,19 +214,13 @@ const btnGhost: React.CSSProperties = {
   color: "var(--text-primary)",
   border: "1px solid var(--border)",
 };
-const btnGhostLink: React.CSSProperties = {
-  ...btnGhost,
-  textDecoration: "none",
-  display: "inline-flex",
-  alignItems: "center",
-};
-const miniBtn: React.CSSProperties = {
-  padding: "5px 11px",
-  borderRadius: 7,
-  fontSize: 12,
+const quickLink: React.CSSProperties = {
+  padding: "9px 16px",
+  borderRadius: 8,
+  fontSize: 13,
   fontWeight: 500,
-  cursor: "pointer",
   background: "var(--surface-2)",
-  color: "var(--text-secondary)",
+  color: "var(--text-primary)",
   border: "1px solid var(--border)",
+  textDecoration: "none",
 };
