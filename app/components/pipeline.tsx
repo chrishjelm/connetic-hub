@@ -33,6 +33,9 @@ export default function Pipeline({
   const [editing, setEditing] = useState<number | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  type Suggestion = { email: string; name: string; type: string; firm: string; reason: string };
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+  const [scanning, setScanning] = useState(false);
 
   function load() {
     fetch(`/api/leads?type=${type}`)
@@ -89,6 +92,42 @@ export default function Pipeline({
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  async function scan() {
+    setScanning(true);
+    setSuggestions(null);
+    try {
+      const r = await fetch("/api/lead-suggest");
+      const d = await r.json();
+      // only show suggestions matching this page's type
+      setSuggestions(
+        d.success ? (d.suggestions || []).filter((s: Suggestion) => s.type === type) : []
+      );
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function accept(s: { email: string; name: string; firm: string; reason: string }) {
+    await fetch("/api/lead-suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "accept", type, ...s }),
+    });
+    setSuggestions((ss) => ss?.filter((x) => x.email !== s.email) || ss);
+    load();
+  }
+
+  async function dismiss(email: string) {
+    await fetch("/api/lead-suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "dismiss", email }),
+    });
+    setSuggestions((ss) => ss?.filter((x) => x.email !== email) || ss);
+  }
+
   return (
     <div style={{ padding: "32px 36px", maxWidth: 980 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
@@ -96,9 +135,14 @@ export default function Pipeline({
           <h1 style={{ fontSize: 22, fontWeight: 600, color: "var(--text-primary)" }}>{title}</h1>
           <p style={{ fontSize: 13, color: "var(--text-muted)" }}>{subtitle}</p>
         </div>
-        <button onClick={() => { setShowForm((s) => !s); setEditing(null); setForm({ ...blank, stage: stages[0] }); }} style={btnAccent}>
-          {showForm ? "Close" : "+ Add"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={scan} disabled={scanning} style={btnGhost}>
+            {scanning ? "Scanning…" : "Scan email"}
+          </button>
+          <button onClick={() => { setShowForm((s) => !s); setEditing(null); setForm({ ...blank, stage: stages[0] }); }} style={btnAccent}>
+            {showForm ? "Close" : "+ Add"}
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -121,6 +165,32 @@ export default function Pipeline({
             <button onClick={save} style={btnAccent}>{editing ? "Update" : "Add"}</button>
             {msg && <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{msg}</span>}
           </div>
+        </div>
+      )}
+
+      {suggestions && suggestions.length > 0 && (
+        <div style={{ ...card, padding: 16, margin: "16px 0 8px", borderLeft: "3px solid var(--accent)" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--accent)", marginBottom: 10 }}>
+            Suggested from your email · {suggestions.length}
+          </div>
+          {suggestions.map((s) => (
+            <div key={s.email} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  {s.name}{s.firm ? <span style={{ color: "var(--text-muted)", fontWeight: 400 }}> · {s.firm}</span> : null}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{s.email}</div>
+                {s.reason && <div style={{ fontSize: 12, color: "var(--text-secondary)", fontStyle: "italic" }}>{s.reason}</div>}
+              </div>
+              <button onClick={() => accept(s)} style={miniAccent}>Add</button>
+              <button onClick={() => dismiss(s.email)} style={miniBtn}>Dismiss</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {suggestions && suggestions.length === 0 && !scanning && (
+        <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "12px 0" }}>
+          No new {type === "investor" ? "investor" : "startup"} candidates found in recent email.
         </div>
       )}
 
@@ -180,4 +250,12 @@ const btnAccent: React.CSSProperties = {
 const miniBtn: React.CSSProperties = {
   padding: "5px 10px", borderRadius: 7, fontSize: 12, fontWeight: 500, cursor: "pointer",
   background: "var(--surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border)",
+};
+const miniAccent: React.CSSProperties = {
+  padding: "5px 12px", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
+  background: "var(--accent)", color: "#fff", border: "none",
+};
+const btnGhost: React.CSSProperties = {
+  padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer",
+  background: "var(--surface-2)", color: "var(--text-primary)", border: "1px solid var(--border)",
 };
