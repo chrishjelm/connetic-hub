@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 
+type Unsub = { available: boolean; oneClick: boolean; url: string; mailto: string };
+
 type MsgSummary = {
   id: string;
   subject?: string;
@@ -10,6 +12,7 @@ type MsgSummary = {
   isRead?: boolean;
   hasAttachments?: boolean;
   from?: { emailAddress?: { name?: string; address?: string } };
+  unsub?: Unsub;
 };
 
 type MsgFull = MsgSummary & {
@@ -58,6 +61,12 @@ export default function Inbox() {
   const [cBody, setCBody] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  const [suggestion, setSuggestion] = useState<{
+    category?: string;
+    recommended?: string;
+    reason?: string;
+  } | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const flash = (m: string) => {
@@ -86,11 +95,13 @@ export default function Inbox() {
     setSelLoading(true);
     setReplyOpen(false);
     setReplyText("");
+    setSuggestion(null);
     try {
       const r = await fetch(`/api/outlook-mail?id=${m.id}`);
       const d = await r.json();
       if (d.success) {
         setSel(d.message);
+        analyze(m.id);
         if (!m.isRead) {
           fetch("/api/outlook-mail", {
             method: "POST",
@@ -182,6 +193,61 @@ export default function Inbox() {
     }
   }
 
+  async function analyze(id: string) {
+    setAnalyzing(true);
+    try {
+      const r = await fetch("/api/outlook-mail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "analyze", id }),
+      });
+      const d = await r.json();
+      if (d.success)
+        setSuggestion({
+          category: d.category,
+          recommended: d.recommended,
+          reason: d.reason,
+        });
+    } catch {
+      /* non-critical */
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  async function doUnsubscribe() {
+    if (!sel) return;
+    const extra = sel.unsub?.url ? { url: sel.unsub.url } : {};
+    const ok = await act("unsubscribe", sel.id, extra);
+    flash(ok ? "Unsubscribe sent" : "Couldn't unsubscribe");
+  }
+
+  async function unsubscribeAll() {
+    if (!list) return;
+    const targets = list.filter((m) => m.unsub?.oneClick && m.unsub?.url);
+    if (!targets.length) {
+      flash("Nothing here can be auto-unsubscribed");
+      return;
+    }
+    setBusy("unsuball");
+    let n = 0;
+    for (const m of targets) {
+      try {
+        const r = await fetch("/api/outlook-mail", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "unsubscribe", url: m.unsub!.url }),
+        });
+        const d = await r.json();
+        if (d.success) n++;
+      } catch {
+        /* skip */
+      }
+    }
+    setBusy(null);
+    flash(`Unsubscribed from ${n} of ${targets.length}`);
+  }
+
   async function sendCompose() {
     if (!cTo.trim()) {
       flash("Add a recipient");
@@ -263,6 +329,13 @@ export default function Inbox() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={unsubscribeAll}
+            disabled={busy !== null}
+            style={btnGhost}
+          >
+            {busy === "unsuball" ? "Unsubscribing…" : "Unsubscribe junk"}
+          </button>
           <button onClick={() => loadList(folder)} style={btnGhost}>
             Refresh
           </button>
@@ -417,7 +490,7 @@ export default function Inbox() {
               </div>
 
               {/* Action bar */}
-              <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
                 <button
                   onClick={() => setReplyOpen((v) => !v)}
                   style={btnAccent(false)}
@@ -431,6 +504,15 @@ export default function Inbox() {
                 >
                   {busy === "archive" ? "…" : "Archive"}
                 </button>
+                {sel.unsub?.available && (
+                  <button
+                    onClick={doUnsubscribe}
+                    disabled={busy !== null}
+                    style={btnGhost}
+                  >
+                    {busy === "unsubscribe" ? "…" : "Unsubscribe"}
+                  </button>
+                )}
                 <button
                   onClick={doDelete}
                   disabled={busy !== null}
@@ -439,6 +521,66 @@ export default function Inbox() {
                   {busy === "delete" ? "…" : "Delete"}
                 </button>
               </div>
+
+              {/* Claude's suggestion */}
+              {(analyzing || suggestion) && (
+                <div
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    borderRadius: 10,
+                    padding: "10px 14px",
+                    marginBottom: 18,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
+                  {analyzing && (
+                    <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                      ✨ Reading the message…
+                    </span>
+                  )}
+                  {!analyzing && suggestion && (
+                    <>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-secondary)",
+                          flex: 1,
+                        }}
+                      >
+                        <strong style={{ color: "var(--accent)" }}>
+                          {suggestion.category}
+                        </strong>{" "}
+                        — {suggestion.reason}
+                      </span>
+                      {suggestion.recommended === "reply" && (
+                        <button
+                          onClick={() => {
+                            setReplyOpen(true);
+                            suggestReply();
+                          }}
+                          style={btnAccent(false)}
+                        >
+                          Draft reply
+                        </button>
+                      )}
+                      {suggestion.recommended === "archive" && (
+                        <button onClick={doArchive} style={btnGhost}>
+                          Archive
+                        </button>
+                      )}
+                      {suggestion.recommended === "unsubscribe" &&
+                        sel.unsub?.available && (
+                          <button onClick={doUnsubscribe} style={btnGhost}>
+                            Unsubscribe
+                          </button>
+                        )}
+                    </>
+                  )}
+                </div>
+              )}
 
               {replyOpen && (
                 <div
