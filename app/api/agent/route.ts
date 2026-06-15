@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { graphToken, gh, GRAPH } from "@/lib/graph";
-import { sbSelect } from "@/lib/db";
+import { sbSelect, sbInsert, sbUpdate } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -93,6 +93,51 @@ const tools = [
       required: ["to", "subject", "body"],
     },
   },
+  {
+    name: "list_leads",
+    description:
+      "List the user's pipeline leads. type 'investor' = VCAFX investors; 'startup' = founders being evaluated. Use to answer pipeline questions.",
+    input_schema: {
+      type: "object",
+      properties: { type: { type: "string", enum: ["investor", "startup"] } },
+      required: ["type"],
+    },
+  },
+  {
+    name: "add_lead",
+    description:
+      "Add a new lead to a pipeline. Investor stages: Identified, Materials sent, In discussion, Committed, Passed. Startup stages: Sourced, Intro call, Diligence, Term sheet, Invested, Passed.",
+    input_schema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["investor", "startup"] },
+        name: { type: "string" },
+        firm: { type: "string", description: "firm (investor) or company (startup)" },
+        email: { type: "string" },
+        stage: { type: "string" },
+        amount: { type: "string", description: "commitment size or round size" },
+        next_step: { type: "string" },
+        notes: { type: "string" },
+      },
+      required: ["type", "name"],
+    },
+  },
+  {
+    name: "update_lead",
+    description:
+      "Update an existing lead by id (from list_leads) — e.g. move stage, set next step, add notes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "number" },
+        stage: { type: "string" },
+        next_step: { type: "string" },
+        notes: { type: "string" },
+        amount: { type: "string" },
+      },
+      required: ["id"],
+    },
+  },
 ];
 
 const SYSTEM = `You are Chris Hjelm's executive assistant inside the Connetic Hub app. Today is ${new Date().toString()}. The user's timezone is US Eastern.
@@ -101,7 +146,9 @@ You can read the user's mail, calendar, documents, and saved people-context usin
 
 When the user wants to reply to or send an email, gather what you need (search/read), then use propose_reply or propose_email. NEVER claim something was sent — these only create a proposal the user approves. Drafts should be concise, professional, and ready to send (no placeholders).
 
-When you have the final answer or have created a proposal, stop and respond in plain text. Keep answers tight and skimmable. If you propose an action, briefly say what you've drafted and that it's ready for approval.`;
+When you have the final answer or have created a proposal, stop and respond in plain text. Keep answers tight and skimmable. If you propose an action, briefly say what you've drafted and that it's ready for approval.
+
+You also manage two deal pipelines via list_leads/add_lead/update_lead: "investor" (VCAFX investors the user has sent materials to or discussed the fund with) and "startup" (founders being evaluated). Adding or updating a lead is a low-risk database write you may do directly when the user clearly asks (e.g. "add Byron as an investor lead, sent materials" -> add_lead type=investor stage='Materials sent'). Confirm back what you recorded. For pipeline questions, use list_leads.`;
 
 // ---------- Tool executors ----------
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -226,6 +273,52 @@ async function runTool(name: string, input: any, token: string): Promise<any> {
         body: input.body,
       },
     };
+  }
+
+  if (name === "list_leads") {
+    try {
+      const rows = await sbSelect(
+        `ch_leads?type=eq.${encodeURIComponent(input.type)}&order=stage.asc&select=id,name,firm,email,stage,amount,next_step,notes,last_touch`
+      );
+      return rows;
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  if (name === "add_lead") {
+    try {
+      const now = new Date().toISOString();
+      await sbInsert("ch_leads", {
+        type: input.type,
+        name: input.name,
+        firm: input.firm || null,
+        email: input.email || null,
+        stage: input.stage || (input.type === "startup" ? "Sourced" : "Identified"),
+        amount: input.amount || null,
+        next_step: input.next_step || null,
+        notes: input.notes || "",
+        last_touch: now,
+        created_at: now,
+        updated_at: now,
+      });
+      return { added: true, name: input.name };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  if (name === "update_lead") {
+    try {
+      const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      for (const k of ["stage", "next_step", "notes", "amount"]) {
+        if (input[k] !== undefined) patch[k] = input[k];
+      }
+      await sbUpdate(`ch_leads?id=eq.${encodeURIComponent(input.id)}`, patch);
+      return { updated: true, id: input.id };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   return { error: `unknown tool ${name}` };
