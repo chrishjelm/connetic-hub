@@ -260,6 +260,63 @@ Body: ${text}`;
       return NextResponse.json({ success: true });
     }
 
+    if (action === "prioritize") {
+      const lr = await fetch(
+        `${GRAPH}/mailFolders/inbox/messages?$top=25&$orderby=receivedDateTime desc&$select=id,subject,from,bodyPreview,receivedDateTime,internetMessageHeaders`,
+        { headers: h(t) }
+      );
+      if (!lr.ok) return fail(await lr.text(), lr.status);
+      const data = await lr.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const msgs = (data.value || []).map((m: any) => ({
+        id: m.id,
+        from: m.from?.emailAddress?.address || "",
+        fromName: m.from?.emailAddress?.name || "",
+        subject: m.subject || "",
+        preview: (m.bodyPreview || "").slice(0, 200),
+        receivedDateTime: m.receivedDateTime,
+        unsub: parseUnsub(m.internetMessageHeaders || []),
+      }));
+      if (!msgs.length)
+        return NextResponse.json({ success: true, messages: [] });
+      const compact = msgs
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (m: any, i: number) =>
+            `${i}. From: ${m.fromName || m.from} | Subject: ${m.subject} | ${m.preview}`
+        )
+        .join("\n");
+      const prompt = `You triage an inbox. For each numbered email assign a priority and a brief reason.
+
+priority: "high" = needs attention soon (a real person awaiting a response, time-sensitive, money/contracts/legal, anything genuinely important). "medium" = worth seeing but not urgent. "low" = newsletters, promotions, automated notifications, noise.
+
+Return ONLY a JSON array, one object per email, same order, no markdown:
+[{"i": 0, "priority": "high", "reason": "5-8 word reason"}]
+
+Emails:
+${compact}`;
+      const raw = await askClaude(prompt, 1500);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let arr: any[] = [];
+      try {
+        arr = JSON.parse(raw.replace(/```json|```/g, "").trim());
+      } catch {
+        arr = [];
+      }
+      const byIndex: Record<number, { priority: string; reason: string }> = {};
+      for (const a of arr)
+        if (typeof a.i === "number")
+          byIndex[a.i] = { priority: a.priority, reason: a.reason };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = msgs.map((m: any, i: number) => ({
+        ...m,
+        priority: byIndex[i]?.priority || "medium",
+        reason: byIndex[i]?.reason || "",
+      }));
+      return NextResponse.json({ success: true, messages: out });
+    }
+
     return fail("Unknown action", 400);
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
