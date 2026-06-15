@@ -1,123 +1,105 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 
-type Lead = {
-  fullname?: string;
-  emailaddress1?: string;
-  statuscode?: number;
-  estimatedvalue?: number;
-  createdon?: string;
-};
-
-type TriageAction = {
+type PMsg = {
+  id: string;
   from: string;
+  fromName?: string;
   subject: string;
-  category: string;
-  urgent: boolean;
-  summary: string;
-  did: string[];
+  preview: string;
+  receivedDateTime?: string;
+  priority: "high" | "medium" | "low" | string;
+  reason?: string;
+  unsub?: { available: boolean; oneClick: boolean; url: string; mailto: string };
 };
 
-type TriageResult = {
-  success: boolean;
-  mailbox?: string;
-  auto_send?: boolean;
-  auto_unsubscribe?: boolean;
-  scanned?: number;
-  actions?: TriageAction[];
-  error?: string;
-};
+const BUCKETS: { key: string; label: string; color: string; blurb: string }[] = [
+  { key: "high", label: "High priority", color: "var(--amber)", blurb: "Handle these first" },
+  { key: "medium", label: "Medium", color: "var(--blue)", blurb: "Worth a look" },
+  { key: "low", label: "Low", color: "var(--text-muted)", blurb: "Noise — clear when you like" },
+];
 
-const cardStyle: React.CSSProperties = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: 12,
-};
-
-function money(n?: number): string {
-  if (!n || isNaN(n)) return "—";
-  if (n >= 1000) return `$${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-  return `$${n}`;
-}
-
-function timeAgo(iso?: string): string {
+function when(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "";
-  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-  if (days <= 0) return "today";
-  if (days === 1) return "yesterday";
-  if (days < 30) return `${days}d ago`;
-  return d.toLocaleDateString();
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 export default function Dashboard() {
-  const [leads, setLeads] = useState<Lead[] | null>(null);
-  const [leadsError, setLeadsError] = useState<string | null>(null);
+  const [msgs, setMsgs] = useState<PMsg[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
-  const [running, setRunning] = useState<null | "gmail" | "outlook">(null);
-  const [result, setResult] = useState<TriageResult | null>(null);
-  const [resultLabel, setResultLabel] = useState<string>("");
+  const flash = (m: string) => {
+    setToast(m);
+    setTimeout(() => setToast(null), 2500);
+  };
 
-  function loadLeads() {
-    setLeads(null);
-    setLeadsError(null);
-    fetch("/api/dynamics?entity=leads")
+  const load = useCallback(() => {
+    setMsgs(null);
+    setErr(null);
+    fetch("/api/outlook-mail", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "prioritize" }),
+    })
       .then((r) => r.json())
       .then((d) => {
-        if (d.success) setLeads(d.data || []);
-        else setLeadsError(d.error || "Could not load leads");
+        if (d.success) setMsgs(d.messages || []);
+        else setErr(d.error || "Could not sort inbox");
       })
-      .catch((e) => setLeadsError(String(e)));
-  }
-
-  useEffect(() => {
-    loadLeads();
+      .catch((e) => setErr(String(e)));
   }, []);
 
-  async function runTriage(which: "gmail" | "outlook") {
-    setRunning(which);
-    setResult(null);
-    setResultLabel(which === "gmail" ? "Gmail" : "Outlook");
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function act(action: string, m: PMsg) {
+    setBusy(m.id + action);
     try {
-      const path = which === "gmail" ? "/api/triage" : "/api/triage-outlook";
-      const r = await fetch(path);
+      const extra =
+        action === "unsubscribe" && m.unsub?.url ? { url: m.unsub.url } : {};
+      const r = await fetch("/api/outlook-mail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, id: m.id, ...extra }),
+      });
       const d = await r.json();
-      setResult(d);
+      if (d.success) {
+        flash(action === "archive" ? "Archived" : "Unsubscribe sent");
+        if (action === "archive")
+          setMsgs((p) => (p ? p.filter((x) => x.id !== m.id) : p));
+      } else {
+        flash(`Failed: ${(d.error || "").slice(0, 60)}`);
+      }
     } catch (e) {
-      setResult({ success: false, error: String(e) });
+      flash(String(e));
     } finally {
-      setRunning(null);
+      setBusy(null);
     }
   }
 
-  const pipeline = (leads || []).reduce(
-    (s, l) => s + (l.estimatedvalue || 0),
-    0
-  );
-  const mode =
-    result && result.success
-      ? result.auto_send
-        ? "Live send"
-        : "Draft-only"
-      : "Draft-only";
-
-  const today = new Date().toLocaleDateString(undefined, {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
+  const counts = {
+    high: (msgs || []).filter((m) => m.priority === "high").length,
+    medium: (msgs || []).filter((m) => m.priority === "medium").length,
+    low: (msgs || []).filter((m) => m.priority === "low").length,
+  };
 
   return (
-    <div style={{ padding: "32px 36px", maxWidth: 1100 }}>
-      {/* Header */}
+    <div style={{ padding: "32px 36px", maxWidth: 1000 }}>
       <div
         style={{
           display: "flex",
           alignItems: "flex-start",
           justifyContent: "space-between",
-          marginBottom: 28,
+          marginBottom: 26,
         }}
       >
         <div>
@@ -129,323 +111,248 @@ export default function Dashboard() {
               marginBottom: 4,
             }}
           >
-            Dashboard
+            Priorities
           </h1>
           <p style={{ fontSize: 14, color: "var(--text-secondary)" }}>
-            Live from Dynamics &amp; your inboxes — {today}
+            {msgs === null
+              ? "Sorting your inbox…"
+              : `${counts.high} high · ${counts.medium} medium · ${counts.low} low`}
           </p>
         </div>
-        <button
-          onClick={loadLeads}
+        <div style={{ display: "flex", gap: 8 }}>
+          <a href="/inbox" style={btnGhostLink}>
+            Open inbox
+          </a>
+          <button onClick={load} style={btnGhost}>
+            Re-prioritize
+          </button>
+        </div>
+      </div>
+
+      {err && (
+        <div
           style={{
-            padding: "9px 18px",
-            borderRadius: 8,
+            ...card,
+            padding: "16px 20px",
+            color: "var(--amber)",
             fontSize: 13,
-            fontWeight: 500,
-            cursor: "pointer",
-            background: "var(--surface-2)",
-            color: "var(--text-primary)",
-            border: "1px solid var(--border)",
           }}
         >
-          Refresh
-        </button>
-      </div>
+          {err}
+        </div>
+      )}
 
-      {/* Stat cards */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          gap: 14,
-          marginBottom: 32,
-        }}
-      >
-        <div style={{ ...cardStyle, padding: "20px 22px" }}>
-          <div style={statLabel}>Active leads</div>
-          <div style={{ ...statNum, color: "var(--accent)" }}>
-            {leads === null ? "…" : leads.length}
-          </div>
-          <div style={statSub}>from Dynamics</div>
+      {msgs === null && !err && (
+        <div
+          style={{
+            ...card,
+            padding: "40px 20px",
+            textAlign: "center",
+            color: "var(--text-muted)",
+            fontSize: 14,
+          }}
+        >
+          ✨ Reading your inbox and ranking by priority…
         </div>
-        <div style={{ ...cardStyle, padding: "20px 22px" }}>
-          <div style={statLabel}>Pipeline value</div>
-          <div style={{ ...statNum, color: "var(--green)" }}>
-            {leads === null ? "…" : money(pipeline)}
-          </div>
-          <div style={statSub}>estimated, open leads</div>
-        </div>
-        <div style={{ ...cardStyle, padding: "20px 22px" }}>
-          <div style={statLabel}>Triage mode</div>
-          <div style={{ ...statNum, color: "var(--blue)", fontSize: 20 }}>
-            {mode}
-          </div>
-          <div style={statSub}>
-            {result?.auto_unsubscribe ? "auto-unsub on" : "review mode"}
-          </div>
-        </div>
-        <div style={{ ...cardStyle, padding: "20px 22px" }}>
-          <div style={statLabel}>Last run</div>
-          <div style={{ ...statNum, color: "var(--amber)" }}>
-            {result && result.success ? result.scanned ?? 0 : "—"}
-          </div>
-          <div style={statSub}>
-            {result && result.success
-              ? `${resultLabel} scanned`
-              : "not run yet"}
-          </div>
-        </div>
-      </div>
+      )}
 
-      {/* Main grid */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1.4fr 1fr",
-          gap: 20,
-        }}
-      >
-        {/* Real leads */}
-        <div style={{ ...cardStyle, overflow: "hidden" }}>
-          <div style={panelHead}>
-            <span style={{ fontWeight: 500, fontSize: 14 }}>
-              Recent leads
-            </span>
-            <a href="/leads" style={linkStyle}>
-              View all →
-            </a>
-          </div>
+      {msgs && msgs.length === 0 && (
+        <div
+          style={{
+            ...card,
+            padding: "40px 20px",
+            textAlign: "center",
+            color: "var(--text-muted)",
+            fontSize: 14,
+          }}
+        >
+          Inbox zero. Nothing to triage.
+        </div>
+      )}
 
-          {leadsError && (
-            <div style={{ padding: "16px 20px", color: "var(--amber)", fontSize: 13 }}>
-              Couldn&apos;t load leads: {leadsError}
-            </div>
-          )}
-          {leads === null && !leadsError && (
-            <div style={{ padding: "16px 20px", color: "var(--text-muted)", fontSize: 13 }}>
-              Loading from Dynamics…
-            </div>
-          )}
-          {leads && leads.length === 0 && (
-            <div style={{ padding: "16px 20px", color: "var(--text-muted)", fontSize: 13 }}>
-              No leads found.
-            </div>
-          )}
-          {leads &&
-            leads.slice(0, 8).map((l, i) => (
+      {msgs &&
+        msgs.length > 0 &&
+        BUCKETS.map((b) => {
+          const items = msgs.filter((m) => m.priority === b.key);
+          if (!items.length) return null;
+          return (
+            <div key={b.key} style={{ marginBottom: 26 }}>
               <div
-                key={i}
                 style={{
-                  padding: "13px 20px",
-                  borderBottom:
-                    i === Math.min(leads.length, 8) - 1
-                      ? "none"
-                      : "1px solid var(--border)",
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "space-between",
+                  gap: 9,
+                  marginBottom: 10,
                 }}
               >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>
-                    {l.fullname || "(no name)"}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "var(--text-muted)",
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {l.emailaddress1 || "—"} · {timeAgo(l.createdon)}
-                  </div>
-                </div>
-                <div
+                <span
                   style={{
-                    fontSize: 13,
-                    fontWeight: 500,
-                    color: "var(--green)",
-                    flexShrink: 0,
-                    marginLeft: 12,
+                    width: 9,
+                    height: 9,
+                    borderRadius: "50%",
+                    background: b.color,
+                  }}
+                />
+                <span
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
                   }}
                 >
-                  {money(l.estimatedvalue)}
-                </div>
-              </div>
-            ))}
-        </div>
-
-        {/* Triage controls */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          <div style={{ ...cardStyle, overflow: "hidden" }}>
-            <div style={panelHead}>
-              <span style={{ fontWeight: 500, fontSize: 14 }}>
-                Triage controls
-              </span>
-            </div>
-            <div style={{ padding: "16px 20px", display: "flex", gap: 10 }}>
-              <button
-                onClick={() => runTriage("gmail")}
-                disabled={running !== null}
-                style={btnPrimary(running !== null)}
-              >
-                {running === "gmail" ? "Running…" : "Run Gmail"}
-              </button>
-              <button
-                onClick={() => runTriage("outlook")}
-                disabled={running !== null}
-                style={btnPrimary(running !== null)}
-              >
-                {running === "outlook" ? "Running…" : "Run Outlook"}
-              </button>
-            </div>
-            {running && (
-              <div
-                style={{
-                  padding: "0 20px 16px",
-                  fontSize: 12,
-                  color: "var(--text-muted)",
-                }}
-              >
-                Scanning {resultLabel}… this can take up to a couple of minutes.
-              </div>
-            )}
-          </div>
-
-          {/* Results */}
-          {result && (
-            <div style={{ ...cardStyle, overflow: "hidden" }}>
-              <div style={panelHead}>
-                <span style={{ fontWeight: 500, fontSize: 14 }}>
-                  {resultLabel} result
+                  {b.label}
                 </span>
-                {result.success && (
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                    {result.scanned ?? 0} scanned
-                  </span>
-                )}
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {items.length} · {b.blurb}
+                </span>
               </div>
 
-              {!result.success && (
-                <div style={{ padding: "16px 20px", color: "var(--amber)", fontSize: 13 }}>
-                  {result.error || "Run failed."}
-                </div>
-              )}
-
-              {result.success && (result.actions || []).length === 0 && (
-                <div style={{ padding: "16px 20px", color: "var(--text-muted)", fontSize: 13 }}>
-                  Nothing new to triage.
-                </div>
-              )}
-
-              {result.success &&
-                (result.actions || []).map((a, i) => (
+              <div style={{ ...card, overflow: "hidden" }}>
+                {items.map((m, i) => (
                   <div
-                    key={i}
+                    key={m.id}
                     style={{
-                      padding: "12px 20px",
+                      padding: "13px 18px",
                       borderBottom:
-                        i === (result.actions || []).length - 1
+                        i === items.length - 1
                           ? "none"
                           : "1px solid var(--border)",
+                      borderLeft: `3px solid ${b.color}`,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 14,
                     }}
                   >
-                    <div
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {a.subject || "(no subject)"}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
-                      {a.from}
-                    </div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                      <span style={tag("var(--accent-dim)", "var(--accent)")}>
-                        {a.category}
-                      </span>
-                      {a.urgent && (
-                        <span style={tag("var(--amber-dim, #3a2e00)", "var(--amber)")}>
-                          urgent
-                        </span>
-                      )}
-                      {a.did.map((d, j) => (
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                        }}
+                      >
                         <span
-                          key={j}
-                          style={tag("var(--surface-2)", "var(--text-secondary)")}
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: "var(--text-primary)",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
                         >
-                          {d}
+                          {m.fromName || m.from}
                         </span>
-                      ))}
+                        <span
+                          style={{
+                            fontSize: 11,
+                            color: "var(--text-muted)",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {when(m.receivedDateTime)}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-secondary)",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {m.subject || "(no subject)"}
+                      </div>
+                      {m.reason && (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "var(--text-muted)",
+                            fontStyle: "italic",
+                            marginTop: 2,
+                          }}
+                        >
+                          {m.reason}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      <button
+                        onClick={() => act("archive", m)}
+                        disabled={busy !== null}
+                        style={miniBtn}
+                      >
+                        {busy === m.id + "archive" ? "…" : "Archive"}
+                      </button>
+                      {m.unsub?.available && (
+                        <button
+                          onClick={() => act("unsubscribe", m)}
+                          disabled={busy !== null}
+                          style={miniBtn}
+                        >
+                          {busy === m.id + "unsubscribe" ? "…" : "Unsub"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
+              </div>
             </div>
-          )}
+          );
+        })}
+
+      {toast && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "var(--text-primary)",
+            color: "var(--bg)",
+            padding: "10px 18px",
+            borderRadius: 8,
+            fontSize: 13,
+            fontWeight: 500,
+            zIndex: 50,
+          }}
+        >
+          {toast}
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
-const statLabel: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--text-muted)",
-  marginBottom: 8,
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
+const card: React.CSSProperties = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: 12,
 };
-const statNum: React.CSSProperties = {
-  fontSize: 28,
-  fontWeight: 600,
-  lineHeight: 1,
+const btnGhost: React.CSSProperties = {
+  padding: "9px 16px",
+  borderRadius: 8,
+  fontSize: 13,
+  fontWeight: 500,
+  cursor: "pointer",
+  background: "var(--surface-2)",
+  color: "var(--text-primary)",
+  border: "1px solid var(--border)",
 };
-const statSub: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--text-secondary)",
-  marginTop: 6,
-};
-const panelHead: React.CSSProperties = {
-  padding: "18px 20px",
-  borderBottom: "1px solid var(--border)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-};
-const linkStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--accent)",
+const btnGhostLink: React.CSSProperties = {
+  ...btnGhost,
   textDecoration: "none",
+  display: "inline-flex",
+  alignItems: "center",
 };
-
-function btnPrimary(disabled: boolean): React.CSSProperties {
-  return {
-    flex: 1,
-    padding: "9px 14px",
-    borderRadius: 8,
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: disabled ? "default" : "pointer",
-    background: disabled ? "var(--surface-2)" : "var(--accent)",
-    color: disabled ? "var(--text-muted)" : "#fff",
-    border: "none",
-  };
-}
-
-function tag(bg: string, color: string): React.CSSProperties {
-  return {
-    background: bg,
-    color,
-    fontSize: 10,
-    fontWeight: 500,
-    padding: "2px 7px",
-    borderRadius: 20,
-    whiteSpace: "nowrap",
-  };
-}
+const miniBtn: React.CSSProperties = {
+  padding: "5px 11px",
+  borderRadius: 7,
+  fontSize: 12,
+  fontWeight: 500,
+  cursor: "pointer",
+  background: "var(--surface-2)",
+  color: "var(--text-secondary)",
+  border: "1px solid var(--border)",
+};
