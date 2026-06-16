@@ -106,7 +106,8 @@ const FAMILY_ADDRESSES = [
   "chris.hjelm@gmail.com",
   "kmhjelm@aol.com",
   "michelle.hjelm@gmail.com",
-  // TODO: add Connor Hjelm and Tom Eckardt addresses when known
+  "hjelm003@gmail.com",
+  "teckardt3@gmail.com",
 ];
 
 // Display-name fallback for senders whose address may vary or isn't known yet.
