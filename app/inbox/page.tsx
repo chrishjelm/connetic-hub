@@ -89,7 +89,11 @@ function InboxInner() {
     category?: string;
     recommended?: string;
     reason?: string;
+    forwardSuggested?: { recipient: string; email: string }[];
   } | null>(null);
+  const [forwardOpen, setForwardOpen] = useState(false);
+  const [forwardTo, setForwardTo] = useState("");
+  const [forwardNote, setForwardNote] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -173,6 +177,9 @@ function InboxInner() {
     setReplyOpen(false);
     setReplyText("");
     setSuggestion(null);
+    setForwardOpen(false);
+    setForwardTo("");
+    setForwardNote("");
     try {
       const r = await fetch(`/api/outlook-mail?id=${m.id}`);
       const d = await r.json();
@@ -251,6 +258,23 @@ function InboxInner() {
     }
   }
 
+  async function doForward() {
+    if (!sel || !forwardTo.trim()) {
+      flash("Add a recipient to forward to");
+      return;
+    }
+    const ok = await act("forward", sel.id, {
+      to: forwardTo,
+      comment: forwardNote,
+    });
+    if (ok) {
+      flash("Forwarded");
+      setForwardOpen(false);
+      setForwardTo("");
+      setForwardNote("");
+    }
+  }
+
   async function suggestReply() {
     if (!sel) return;
     setSuggesting(true);
@@ -284,6 +308,7 @@ function InboxInner() {
           category: d.category,
           recommended: d.recommended,
           reason: d.reason,
+          forwardSuggested: d.forwardSuggested || [],
         });
     } catch {
       /* non-critical */
@@ -617,6 +642,12 @@ function InboxInner() {
                   Reply
                 </button>
                 <button
+                  onClick={() => setForwardOpen((v) => !v)}
+                  style={btnGhost}
+                >
+                  Forward
+                </button>
+                <button
                   onClick={doArchive}
                   disabled={busy !== null}
                   style={btnGhost}
@@ -696,6 +727,20 @@ function InboxInner() {
                             Unsubscribe
                           </button>
                         )}
+                      {suggestion.forwardSuggested &&
+                        suggestion.forwardSuggested.map((f) => (
+                          <button
+                            key={f.email}
+                            onClick={() => {
+                              setForwardTo(f.email);
+                              setForwardOpen(true);
+                            }}
+                            style={btnGhost}
+                            title={f.email}
+                          >
+                            Forward → {f.recipient}
+                          </button>
+                        ))}
                     </>
                   )}
                 </div>
@@ -750,6 +795,76 @@ function InboxInner() {
                       {busy === "reply" ? "Sending…" : "Send reply"}
                     </button>
                     <button onClick={() => setReplyOpen(false)} style={btnGhost}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {forwardOpen && (
+                <div
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: 14,
+                    marginBottom: 18,
+                    background: "var(--surface)",
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
+                    Forward this message
+                  </div>
+                  {suggestion?.forwardSuggested &&
+                    suggestion.forwardSuggested.length > 0 && (
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 6,
+                          flexWrap: "wrap",
+                          marginBottom: 8,
+                        }}
+                      >
+                        {suggestion.forwardSuggested.map((f) => (
+                          <button
+                            key={f.email}
+                            onClick={() => setForwardTo(f.email)}
+                            style={{
+                              ...btnGhost,
+                              padding: "4px 10px",
+                              fontSize: 12,
+                              color:
+                                forwardTo === f.email
+                                  ? "var(--accent)"
+                                  : "var(--text-secondary)",
+                            }}
+                            title={f.email}
+                          >
+                            {f.recipient}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  <input
+                    value={forwardTo}
+                    onChange={(e) => setForwardTo(e.target.value)}
+                    placeholder="Forward to (comma-separated)"
+                    style={inputStyle}
+                  />
+                  <textarea
+                    value={forwardNote}
+                    onChange={(e) => setForwardNote(e.target.value)}
+                    placeholder="Add a note (optional)…"
+                    style={textareaStyle}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button
+                      onClick={doForward}
+                      disabled={busy !== null || !forwardTo.trim()}
+                      style={btnAccent(busy !== null || !forwardTo.trim())}
+                    >
+                      {busy === "forward" ? "Forwarding…" : "Forward"}
+                    </button>
+                    <button onClick={() => setForwardOpen(false)} style={btnGhost}>
                       Cancel
                     </button>
                   </div>
