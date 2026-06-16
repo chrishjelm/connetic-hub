@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { graphToken, gh, GRAPH } from "@/lib/graph";
 import { sbSelect, sbInsert, sbUpdate } from "@/lib/db";
+import { detectOpenLoops } from "@/lib/followups";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5";
 const ANTHROPIC = "https://api.anthropic.com/v1/messages";
 
 // ---------- Tool definitions exposed to the model ----------
@@ -121,6 +122,15 @@ const tools = [
     },
   },
   {
+    name: "list_followups",
+    description:
+      "List open follow-ups (threads needing attention). direction 'waiting_on_them' = the user sent something and got no reply; 'waiting_on_you' = someone is awaiting the user's reply. Omit direction for both. Use for questions like 'who hasn't replied to me?' or 'what am I behind on?'.",
+    input_schema: {
+      type: "object",
+      properties: { direction: { type: "string", enum: ["waiting_on_them", "waiting_on_you"] } },
+    },
+  },
+  {
     name: "list_leads",
     description:
       "List the user's pipeline leads. type 'investor' = VCAFX investors; 'startup' = founders being evaluated. Use to answer pipeline questions.",
@@ -177,7 +187,9 @@ When the user wants to schedule a meeting, resolve attendee emails with find_per
 
 When you have the final answer or have created a proposal, stop and respond in plain text. Keep answers tight and skimmable. If you propose an action, briefly say what you've drafted and that it's ready for approval.
 
-You also manage two deal pipelines via list_leads/add_lead/update_lead: "investor" (VCAFX investors the user has sent materials to or discussed the fund with) and "startup" (founders being evaluated). Adding or updating a lead is a low-risk database write you may do directly when the user clearly asks (e.g. "add Byron as an investor lead, sent materials" -> add_lead type=investor stage='Materials sent'). Confirm back what you recorded. For pipeline questions, use list_leads.`;
+You also manage two deal pipelines via list_leads/add_lead/update_lead: "investor" (VCAFX investors the user has sent materials to or discussed the fund with) and "startup" (founders being evaluated). Adding or updating a lead is a low-risk database write you may do directly when the user clearly asks (e.g. "add Byron as an investor lead, sent materials" -> add_lead type=investor stage='Materials sent'). Confirm back what you recorded. For pipeline questions, use list_leads.
+
+You can also surface open follow-ups with list_followups — threads where the user is waiting on a reply ("waiting_on_them") or someone is waiting on the user ("waiting_on_you"). Use it for "who hasn't replied to me?", "what am I behind on?", "what's slipping?". When the user wants to nudge someone, draft the follow-up with propose_reply (find the thread first) or propose_email.`;
 
 // ---------- Tool executors ----------
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -335,6 +347,23 @@ async function runTool(name: string, input: any, token: string): Promise<any> {
         body: input.body || "",
       },
     };
+  }
+
+  if (name === "list_followups") {
+    try {
+      const open = await detectOpenLoops(token);
+      const filtered = input.direction
+        ? open.filter((o) => o.direction === input.direction)
+        : open;
+      return filtered.map((o) => ({
+        who: o.counterpart,
+        subject: o.subject,
+        direction: o.direction,
+        days_waiting: o.days,
+      }));
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   if (name === "list_leads") {
