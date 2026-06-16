@@ -94,6 +94,33 @@ const tools = [
     },
   },
   {
+    name: "find_person",
+    description:
+      "Resolve a person's name to their email address by searching the user's people/contacts (e.g. 'Luke' -> luke@firm.com). Use before proposing a meeting or email when you only have a name.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string", description: "name or partial name to search" } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "propose_meeting",
+    description:
+      "Propose a calendar meeting for the user to approve. Does NOT create it — returns a proposal card. Provide start/end as Eastern local time in 'YYYY-MM-DDTHH:MM:SS' format (no timezone suffix). Before proposing, use list_calendar to pick a time that doesn't conflict with the user's existing events. Defaults to a Teams online meeting.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subject: { type: "string" },
+        start: { type: "string", description: "Eastern local start, e.g. 2026-06-18T14:00:00" },
+        end: { type: "string", description: "Eastern local end, e.g. 2026-06-18T14:30:00" },
+        attendees: { type: "string", description: "attendee email address(es), comma separated" },
+        online: { type: "boolean", description: "true for a Teams meeting (default true)" },
+        body: { type: "string", description: "optional agenda/notes" },
+      },
+      required: ["subject", "start", "end"],
+    },
+  },
+  {
     name: "list_leads",
     description:
       "List the user's pipeline leads. type 'investor' = VCAFX investors; 'startup' = founders being evaluated. Use to answer pipeline questions.",
@@ -145,6 +172,8 @@ const SYSTEM = `You are Chris Hjelm's executive assistant inside the Connetic Hu
 You can read the user's mail, calendar, documents, and saved people-context using tools. Use them to answer questions accurately — never invent calendar events, emails, or facts; look them up.
 
 When the user wants to reply to or send an email, gather what you need (search/read), then use propose_reply or propose_email. NEVER claim something was sent — these only create a proposal the user approves. Drafts should be concise, professional, and ready to send (no placeholders).
+
+When the user wants to schedule a meeting, resolve attendee emails with find_person if you only have names, check the user's calendar with list_calendar to pick a conflict-free time on the requested day (assume business hours 9am-5pm Eastern unless told otherwise), then use propose_meeting. NEVER claim a meeting was booked — propose_meeting only creates a proposal the user approves. If you can't find a clear free slot or the request is ambiguous (no day/time), ask a brief clarifying question instead of guessing.
 
 When you have the final answer or have created a proposal, stop and respond in plain text. Keep answers tight and skimmable. If you propose an action, briefly say what you've drafted and that it's ready for approval.
 
@@ -271,6 +300,39 @@ async function runTool(name: string, input: any, token: string): Promise<any> {
         to: input.to,
         subject: input.subject,
         body: input.body,
+      },
+    };
+  }
+
+  if (name === "find_person") {
+    const r = await fetch(
+      `${GRAPH}/people?$search="${encodeURIComponent(input.name || "")}"&$top=5&$select=displayName,scoredEmailAddresses`,
+      { headers: gh(token) }
+    );
+    if (!r.ok) return { error: await r.text() };
+    const d = await r.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const matches = (d.value || [])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((p: any) => ({
+        name: p.displayName,
+        email: p.scoredEmailAddresses?.[0]?.address || "",
+      }))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((p: any) => p.email);
+    return matches.length ? matches : { note: "No match found in people; ask the user for the email." };
+  }
+
+  if (name === "propose_meeting") {
+    return {
+      _proposal: {
+        kind: "meeting",
+        subject: input.subject,
+        start: input.start,
+        end: input.end,
+        attendees: input.attendees || "",
+        online: input.online !== false,
+        body: input.body || "",
       },
     };
   }
