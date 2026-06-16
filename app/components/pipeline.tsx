@@ -36,6 +36,9 @@ export default function Pipeline({
   type Suggestion = { email: string; name: string; type: string; firm: string; reason: string };
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [composer, setComposer] = useState<{ leadId: number; name: string; to: string; subject: string; body: string } | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const [sending, setSending] = useState(false);
 
   function load() {
     fetch(`/api/leads?type=${type}`)
@@ -48,6 +51,63 @@ export default function Pipeline({
   function flash(m: string) {
     setMsg(m);
     setTimeout(() => setMsg(null), 2000);
+  }
+
+  function openComposer(l: Lead) {
+    setComposer({ leadId: l.id, name: l.name, to: l.email || "", subject: "", body: "" });
+  }
+
+  async function draftWithAI() {
+    if (!composer) return;
+    setDrafting(true);
+    try {
+      const r = await fetch("/api/lead-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "draft", leadId: composer.leadId }),
+      });
+      const d = await r.json();
+      if (d.success) {
+        setComposer((c) => (c ? { ...c, to: d.to || c.to, subject: d.subject, body: d.body } : c));
+      } else {
+        flash(d.error || "Draft failed");
+      }
+    } catch {
+      flash("Draft failed");
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function sendLeadEmail() {
+    if (!composer) return;
+    if (!composer.to.trim()) return flash("No recipient email");
+    setSending(true);
+    try {
+      const r = await fetch("/api/lead-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send",
+          to: composer.to,
+          subject: composer.subject,
+          body: composer.body,
+          leadId: composer.leadId,
+        }),
+      });
+      const d = await r.json();
+      if (d.success) {
+        setComposer(null);
+        flash("Email sent ✓");
+        load();
+      } else {
+        flash(d.error || "Send failed");
+      }
+    } catch {
+      flash("Send failed");
+    } finally {
+      setSending(false);
+    }
   }
 
   async function save() {
@@ -221,6 +281,7 @@ export default function Pipeline({
                     <select value={l.stage} onChange={(e) => moveStage(l, e.target.value)} style={{ ...input, padding: "5px 8px", fontSize: 12 }}>
                       {stages.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
+                    {l.email && <button onClick={() => openComposer(l)} style={miniAccent}>Email</button>}
                     <button onClick={() => edit(l)} style={miniBtn}>Edit</button>
                     <button onClick={() => remove(l.id)} style={{ ...miniBtn, color: "var(--amber)" }}>×</button>
                   </div>
@@ -230,6 +291,60 @@ export default function Pipeline({
           </div>
         );
       })}
+
+      {composer && (
+        <div
+          onClick={() => !sending && !drafting && setComposer(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ ...card, width: "100%", maxWidth: 560, padding: 20, maxHeight: "90vh", overflow: "auto" }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>Email {composer.name}</div>
+              <button onClick={() => setComposer(null)} style={{ ...miniBtn, fontSize: 16 }}>×</button>
+            </div>
+
+            <label style={fieldLabel}>To</label>
+            <input
+              value={composer.to}
+              onChange={(e) => setComposer((c) => (c ? { ...c, to: e.target.value } : c))}
+              style={{ ...input, width: "100%", marginBottom: 10 }}
+            />
+
+            <div style={{ marginBottom: 10 }}>
+              <button onClick={draftWithAI} disabled={drafting} style={btnAccent}>
+                {drafting ? "Drafting…" : "✨ Draft with AI"}
+              </button>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 10 }}>
+                Uses their stage, notes, and history
+              </span>
+            </div>
+
+            <label style={fieldLabel}>Subject</label>
+            <input
+              value={composer.subject}
+              onChange={(e) => setComposer((c) => (c ? { ...c, subject: e.target.value } : c))}
+              style={{ ...input, width: "100%", marginBottom: 10 }}
+            />
+
+            <label style={fieldLabel}>Message</label>
+            <textarea
+              value={composer.body}
+              onChange={(e) => setComposer((c) => (c ? { ...c, body: e.target.value } : c))}
+              style={{ ...input, width: "100%", minHeight: 200, resize: "vertical", marginBottom: 14, lineHeight: 1.5, fontFamily: "inherit" }}
+            />
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={sendLeadEmail} disabled={sending || drafting} style={btnAccent}>
+                {sending ? "Sending…" : "Send"}
+              </button>
+              <button onClick={() => setComposer(null)} disabled={sending} style={btnGhost}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -239,6 +354,7 @@ function Muted({ children }: { children: React.ReactNode }) {
 }
 
 const card: React.CSSProperties = { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12 };
+const fieldLabel: React.CSSProperties = { display: "block", fontSize: 11, color: "var(--text-muted)", marginBottom: 4, fontWeight: 500 };
 const input: React.CSSProperties = {
   padding: "9px 12px", borderRadius: 8, fontSize: 13, background: "var(--surface-2)",
   color: "var(--text-primary)", border: "1px solid var(--border)", outline: "none",
