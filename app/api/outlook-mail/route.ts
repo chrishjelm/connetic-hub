@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { sbSelect } from "@/lib/db";
-import { matchForwardRules } from "@/lib/forwardRules";
+import { matchForwardRules, matchFamilySender } from "@/lib/forwardRules";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -199,6 +199,14 @@ Body: ${text}`;
       }
       // Org forward suggestions (most-specific-first; may be 0, 1, or 2).
       const forwardSuggested = matchForwardRules(m.subject || "", text);
+      // Family sender -> personal Gmail (sender-based, prepended).
+      const fam = matchFamilySender(
+        m.from?.emailAddress?.address || "",
+        m.from?.emailAddress?.name || ""
+      );
+      if (fam && !forwardSuggested.some((f) => f.email === fam.email)) {
+        forwardSuggested.unshift(fam);
+      }
       return NextResponse.json({
         success: true,
         ...parsed,
