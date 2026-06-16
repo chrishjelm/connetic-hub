@@ -56,8 +56,12 @@ function rowAccent(priority?: string): string {
   return "transparent";
 }
 
-function when(iso?: string): string {
+function when(iso?: string, mounted?: boolean): string {
   if (!iso) return "";
+  // Avoid SSR/client hydration mismatch (React #418): time strings depend on
+  // the current moment, timezone and locale, which differ between server and
+  // browser. Render nothing until the client has mounted.
+  if (!mounted) return "";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "";
   const now = new Date();
@@ -79,6 +83,7 @@ import { Suspense } from "react";
 
 function InboxInner() {
   const [folder, setFolder] = useState("inbox");
+  const [mounted, setMounted] = useState(false);
   const [view, setView] = useState<ViewKey>("all");
   const [meta, setMeta] = useState<Record<string, MsgMeta>>({});
   const [prioritizing, setPrioritizing] = useState(false);
@@ -178,6 +183,10 @@ function InboxInner() {
   }, []);
 
   const searchParams = useSearchParams();
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     loadList(folder);
@@ -635,7 +644,7 @@ function InboxInner() {
                     </div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                       Waiting on you · last activity{" "}
-                      {when(l.last_activity)}
+                      {when(l.last_activity, mounted)}
                     </div>
                   </div>
                 ));
@@ -687,7 +696,7 @@ function InboxInner() {
                   <span
                     style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}
                   >
-                    {when(m.receivedDateTime)}
+                    {when(m.receivedDateTime, mounted)}
                   </span>
                 </div>
                 <div
