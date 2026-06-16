@@ -27,7 +27,7 @@ async function askClaude(prompt: string, maxTokens: number): Promise<string> {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
+      model: process.env.ANTHROPIC_MODEL || "claude-haiku-4-5",
       max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }],
     }),
