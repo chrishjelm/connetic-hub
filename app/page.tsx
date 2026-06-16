@@ -27,6 +27,9 @@ function dayLabel(iso?: string): string {
 export default function HomePage() {
   const [data, setData] = useState<Home | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Time-dependent values are computed after mount to avoid SSR/client
+  // hydration mismatches (server timezone differs from the browser's).
+  const [now, setNow] = useState<Date | null>(null);
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [followups, setFollowups] = useState<any | null>(null);
@@ -75,13 +78,15 @@ export default function HomePage() {
   }
 
   useEffect(load, []);
+  useEffect(() => setNow(new Date()), []);
 
   function removeId(id: string) {
     setRemovedIds((prev) => new Set([...prev, id]));
   }
 
   const greeting = (() => {
-    const h = new Date().getHours();
+    if (!now) return "Hello";
+    const h = now.getHours();
     if (h < 12) return "Good morning";
     if (h < 18) return "Good afternoon";
     return "Good evening";
@@ -101,7 +106,7 @@ export default function HomePage() {
         <button onClick={load} style={btnGhost}>Refresh</button>
       </div>
       <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 18 }}>
-        {new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
+        {now ? now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" }) : "\u00A0"}
       </p>
 
       <form
