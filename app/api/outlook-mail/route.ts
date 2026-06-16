@@ -1,11 +1,5 @@
 import { NextResponse } from "next/server";
 import { sbSelect } from "@/lib/db";
-
-// FIND:
-import { sbSelect } from "@/lib/db";
- 
-// REPLACE WITH:
-import { sbSelect } from "@/lib/db";
 import { matchForwardRules } from "@/lib/forwardRules";
 
 export const dynamic = "force-dynamic";
@@ -180,25 +174,6 @@ Body: ${text}`;
         .slice(0, 3000);
       const prompt = `You are an email assistant. Read the email and recommend ONE action.
 
-      if (parsed.recommended === "unsubscribe" && !unsub.available) {
-        parsed.recommended = "archive";
-      }
-      return NextResponse.json({ success: true, ...parsed, unsub });
- 
-// REPLACE WITH:
-      // Don't recommend unsubscribe if it isn't actually possible.
-      if (parsed.recommended === "unsubscribe" && !unsub.available) {
-        parsed.recommended = "archive";
-      }
-      // Org forward suggestions (most-specific-first; may be 0, 1, or 2).
-      const forwardSuggested = matchForwardRules(m.subject || "", text);
-      return NextResponse.json({
-        success: true,
-        ...parsed,
-        unsub,
-        forwardSuggested,
-      });
-
 Return ONLY JSON, no markdown:
 {
   "category": short label (e.g. promotion, newsletter, personal, work, invoice, notification),
@@ -222,7 +197,14 @@ Body: ${text}`;
       if (parsed.recommended === "unsubscribe" && !unsub.available) {
         parsed.recommended = "archive";
       }
-      return NextResponse.json({ success: true, ...parsed, unsub });
+      // Org forward suggestions (most-specific-first; may be 0, 1, or 2).
+      const forwardSuggested = matchForwardRules(m.subject || "", text);
+      return NextResponse.json({
+        success: true,
+        ...parsed,
+        unsub,
+        forwardSuggested,
+      });
     }
 
     if (action === "unsubscribe") {
@@ -275,7 +257,8 @@ Body: ${text}`;
       });
       if (!r.ok) return fail(await r.text(), r.status);
       return NextResponse.json({ success: true });
-    
+    }
+
     if (action === "archive") {
       if (!id) return fail("Missing id", 400);
       const r = await fetch(`${GRAPH}/messages/${id}/move`, {
