@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSettings } from "@/lib/db";
+import { sbSelect } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -12,9 +12,6 @@ const CLIENT_SECRET =
 const TENANT =
   process.env.AZURE_TENANT_ID || process.env.DYNAMICS_TENANT_ID || "organizations";
 
-const SCOPE =
-  "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Files.Read.All Sites.Read.All People.Read";
-
 async function getToken(): Promise<string> {
   const res = await fetch(
     `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`,
@@ -26,24 +23,320 @@ async function getToken(): Promise<string> {
         client_secret: CLIENT_SECRET,
         refresh_token: process.env.OUTLOOK_REFRESH_TOKEN!,
         grant_type: "refresh_token",
-        scope: SCOPE,
+        scope: "offline_access User.Read Mail.ReadWrite Mail.Send",
       }),
     }
   );
-  if (!res.ok) throw new Error(`token ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`auth ${res.status}: ${await res.text()}`);
   return (await res.json()).access_token as string;
 }
 
-function authH(t: string) {
-  return { Authorization: `Bearer ${t}` };
+function h(t: string) {
+  return { Authorization: `Bearer ${t}`, "Content-Type": "application/json" };
+}
+
+function fail(msg: string, status = 500) {
+  return NextResponse.json({ success: false, error: msg }, { status });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safe(fn: () => Promise<any>, fallback: any) {
+function findHeader(headers: any[], name: string): string {
+  if (!Array.isArray(headers)) return "";
+  const x = headers.find(
+    (q) => (q.name || "").toLowerCase() === name.toLowerCase()
+  );
+  return x ? x.value || "" : "";
+}
+
+type Unsub = {
+  available: boolean;
+  oneClick: boolean;
+  url: string;
+  mailto: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseUnsub(headers: any[]): Unsub {
+  const lu = findHeader(headers, "List-Unsubscribe");
+  const lup = findHeader(headers, "List-Unsubscribe-Post");
+  if (!lu) return { available: false, oneClick: false, url: "", mailto: "" };
+  const urls = [...lu.matchAll(/<([^>]+)>/g)].map((m) => m[1]);
+  const url = urls.find((u) => u.toLowerCase().startsWith("http")) || "";
+  const mailto = urls.find((u) => u.toLowerCase().startsWith("mailto:")) || "";
+  const oneClick = !!(url && /one-click/i.test(lup));
+  return { available: !!(url || mailto), oneClick, url, mailto };
+}
+
+// ---- GET: list a folder, or fetch one full message (?id=) ------
+export async function GET(req: Request) {
   try {
-    return await fn();
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+    const folder = searchParams.get("folder") || "inbox";
+    const t = await getToken();
+
+    if (id) {
+      const r = await fetch(
+        `${GRAPH}/messages/${id}?$select=id,subject,from,toRecipients,ccRecipients,body,bodyPreview,receivedDateTime,isRead,hasAttachments,internetMessageHeaders`,
+        { headers: h(t) }
+      );
+      if (!r.ok) return fail(await r.text(), r.status);
+      const m = await r.json();
+      m.unsub = parseUnsub(m.internetMessageHeaders || []);
+      delete m.internetMessageHeaders;
+      return NextResponse.json({ success: true, message: m });
+    }
+
+    const r = await fetch(
+      `${GRAPH}/mailFolders/${folder}/messages` +
+        `?$top=30&$orderby=receivedDateTime desc` +
+        `&$select=id,subject,from,bodyPreview,receivedDateTime,isRead,hasAttachments,internetMessageHeaders`,
+      { headers: h(t) }
+    );
+    if (!r.ok) return fail(await r.text(), r.status);
+    const data = await r.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const messages = (data.value || []).map((m: any) => {
+      const unsub = parseUnsub(m.internetMessageHeaders || []);
+      delete m.internetMessageHeaders;
+      return { ...m, unsub };
+    });
+    return NextResponse.json({ success: true, messages });
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+// ---- POST: actions ---------------------------------------------
+export async function POST(req: Request) {
+  try {
+    const t = await getToken();
+    const b = await req.json();
+    const { action, id } = b;
+
+    if (action === "send") {
+      const to = String(b.to || "")
+        .split(",")
+        .map((a: string) => a.trim())
+        .filter(Boolean)
+        .map((address: string) => ({ emailAddress: { address } }));
+      if (!to.length) return fail("No recipient", 400);
+      const r = await fetch(`${GRAPH}/sendMail`, {
+        method: "POST",
+        headers: h(t),
+        body: JSON.stringify({
+          message: {
+            subject: b.subject || "(no subject)",
+            body: { contentType: "Text", content: b.content || "" },
+            toRecipients: to,
+          },
+          saveToSentItems: true,
+        }),
+      });
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "suggest") {
+      if (!id) return fail("Missing id", 400);
+      const mr = await fetch(
+        `${GRAPH}/messages/${id}?$select=subject,from,body,bodyPreview`,
+        { headers: h(t) }
+      );
+      if (!mr.ok) return fail(await mr.text(), mr.status);
+      const m = await mr.json();
+      const text = (m.body?.content || m.bodyPreview || "")
+        .replace(/<[^>]+>/g, " ")
+        .slice(0, 4000);
+      const senderEmail = (m.from?.emailAddress?.address || "").toLowerCase();
+      const context = await peopleContext(senderEmail);
+      const prompt = `You are drafting a reply on behalf of the mailbox owner. Write a concise, professional, ready-to-send reply to the email below. Return ONLY the reply body text — no subject line, no "[Your name]" placeholders, no commentary.${context}
+
+From: ${m.from?.emailAddress?.address}
+Subject: ${m.subject}
+Body: ${text}`;
+      const reply = await askClaude(prompt, 600);
+      return NextResponse.json({ success: true, reply });
+    }
+
+    if (action === "analyze") {
+      if (!id) return fail("Missing id", 400);
+      const mr = await fetch(
+        `${GRAPH}/messages/${id}?$select=subject,from,body,bodyPreview,internetMessageHeaders`,
+        { headers: h(t) }
+      );
+      if (!mr.ok) return fail(await mr.text(), mr.status);
+      const m = await mr.json();
+      const unsub = parseUnsub(m.internetMessageHeaders || []);
+      const text = (m.body?.content || m.bodyPreview || "")
+        .replace(/<[^>]+>/g, " ")
+        .slice(0, 3000);
+      const prompt = `You are an email assistant. Read the email and recommend ONE action.
+
+Return ONLY JSON, no markdown:
+{
+  "category": short label (e.g. promotion, newsletter, personal, work, invoice, notification),
+  "recommended": one of "reply" | "archive" | "unsubscribe" | "keep",
+  "reason": one short sentence explaining the recommendation
+}
+
+Guidance: "reply" if a real person is waiting on a response; "unsubscribe" if it's recurring marketing the owner likely doesn't want; "archive" for low-value automated mail to file away; "keep" if it should stay visible in the inbox.
+
+From: ${m.from?.emailAddress?.address}
+Subject: ${m.subject}
+Body: ${text}`;
+      const raw = await askClaude(prompt, 300);
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+      } catch {
+        parsed = { category: "other", recommended: "keep", reason: "Unclear." };
+      }
+      // Don't recommend unsubscribe if it isn't actually possible.
+      if (parsed.recommended === "unsubscribe" && !unsub.available) {
+        parsed.recommended = "archive";
+      }
+      return NextResponse.json({ success: true, ...parsed, unsub });
+    }
+
+    if (action === "unsubscribe") {
+      let url = b.url as string | undefined;
+      if (!url && id) {
+        const mr = await fetch(
+          `${GRAPH}/messages/${id}?$select=internetMessageHeaders`,
+          { headers: h(t) }
+        );
+        if (mr.ok) {
+          const m = await mr.json();
+          url = parseUnsub(m.internetMessageHeaders || []).url;
+        }
+      }
+      if (!url) return fail("No one-click unsubscribe available", 400);
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "List-Unsubscribe=One-Click",
+      });
+      return NextResponse.json({ success: r.ok, status: r.status });
+    }
+
+    if (action === "reply") {
+      if (!id) return fail("Missing id", 400);
+      const r = await fetch(`${GRAPH}/messages/${id}/reply`, {
+        method: "POST",
+        headers: h(t),
+        body: JSON.stringify({ comment: b.content || "" }),
+      });
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "archive") {
+      if (!id) return fail("Missing id", 400);
+      const r = await fetch(`${GRAPH}/messages/${id}/move`, {
+        method: "POST",
+        headers: h(t),
+        body: JSON.stringify({ destinationId: "archive" }),
+      });
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "delete") {
+      if (!id) return fail("Missing id", 400);
+      const r = await fetch(`${GRAPH}/messages/${id}`, {
+        method: "DELETE",
+        headers: h(t),
+      });
+      if (!r.ok && r.status !== 204) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "markRead") {
+      if (!id) return fail("Missing id", 400);
+      const r = await fetch(`${GRAPH}/messages/${id}`, {
+        method: "PATCH",
+        headers: h(t),
+        body: JSON.stringify({ isRead: true }),
+      });
+      if (!r.ok) return fail(await r.text(), r.status);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "prioritize") {
+      const lr = await fetch(
+        `${GRAPH}/mailFolders/inbox/messages?$top=25&$orderby=receivedDateTime desc&$select=id,subject,from,bodyPreview,receivedDateTime,internetMessageHeaders`,
+        { headers: h(t) }
+      );
+      if (!lr.ok) return fail(await lr.text(), lr.status);
+      const data = await lr.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const msgs = (data.value || []).map((m: any) => ({
+        id: m.id,
+        from: m.from?.emailAddress?.address || "",
+        fromName: m.from?.emailAddress?.name || "",
+        subject: m.subject || "",
+        preview: (m.bodyPreview || "").slice(0, 200),
+        receivedDateTime: m.receivedDateTime,
+        unsub: parseUnsub(m.internetMessageHeaders || []),
+      }));
+      if (!msgs.length)
+        return NextResponse.json({ success: true, messages: [] });
+      const compact = msgs
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (m: any, i: number) =>
+            `${i}. From: ${m.fromName || m.from} | Subject: ${m.subject} | ${m.preview}`
+        )
+        .join("\n");
+      const prompt = `You triage an inbox. For each numbered email assign a priority and a brief reason.
+
+priority: "high" = needs attention soon (a real person awaiting a response, time-sensitive, money/contracts/legal, anything genuinely important). "medium" = worth seeing but not urgent. "low" = newsletters, promotions, automated notifications, noise.
+
+Return ONLY a JSON array, one object per email, same order, no markdown:
+[{"i": 0, "priority": "high", "reason": "5-8 word reason"}]
+
+Emails:
+${compact}`;
+      const raw = await askClaude(prompt, 1500);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let arr: any[] = [];
+      try {
+        arr = JSON.parse(raw.replace(/```json|```/g, "").trim());
+      } catch {
+        arr = [];
+      }
+      const byIndex: Record<number, { priority: string; reason: string }> = {};
+      for (const a of arr)
+        if (typeof a.i === "number")
+          byIndex[a.i] = { priority: a.priority, reason: a.reason };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = msgs.map((m: any, i: number) => ({
+        ...m,
+        priority: byIndex[i]?.priority || "medium",
+        reason: byIndex[i]?.reason || "",
+      }));
+      return NextResponse.json({ success: true, messages: out });
+    }
+
+    return fail("Unknown action", 400);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function peopleContext(email: string): Promise<string> {
+  if (!email) return "";
+  try {
+    const rows = await sbSelect<{ name: string; role: string; notes: string }>(
+      `ch_people?email=eq.${encodeURIComponent(email)}&select=name,role,notes`
+    );
+    const p = rows[0];
+    if (!p || !p.notes) return "";
+    return `\n\nContext about the sender (use it to tailor tone and content): ${p.name || email}${p.role ? ` (${p.role})` : ""} — ${p.notes}`;
   } catch {
-    return fallback;
+    return "";
   }
 }
 
@@ -56,12 +349,12 @@ async function askClaude(prompt: string, maxTokens: number): Promise<string> {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
+      model: process.env.ANTHROPIC_MODEL || "claude-haiku-4-5",
       max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }],
     }),
   });
-  if (!ar.ok) throw new Error(`anthropic ${ar.status}`);
+  if (!ar.ok) throw new Error(`Anthropic ${ar.status}: ${await ar.text()}`);
   const ad = await ar.json();
   return (ad.content || [])
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -70,151 +363,4 @@ async function askClaude(prompt: string, maxTokens: number): Promise<string> {
     .map((x: any) => x.text)
     .join("")
     .trim();
-}
-
-export async function GET() {
-  try {
-    const t = await getToken();
-    const now = new Date();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfWindow = new Date(now);
-    endOfWindow.setDate(endOfWindow.getDate() + 1);
-    endOfWindow.setHours(23, 59, 59, 0);
-
-    // --- Calendar: today + tomorrow ---
-    const calendar = await safe(async () => {
-      const r = await fetch(
-        `${GRAPH}/calendarView?startDateTime=${startOfDay.toISOString()}&endDateTime=${endOfWindow.toISOString()}&$select=subject,start,end,location,isAllDay,onlineMeeting,attendees&$orderby=start/dateTime&$top=20`,
-        { headers: { ...authH(t), Prefer: 'outlook.timezone="Eastern Standard Time"' } }
-      );
-      if (!r.ok) return [];
-      const d = await r.json();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (d.value || []).map((e: any) => ({
-        subject: e.subject,
-        start: e.start?.dateTime,
-        end: e.end?.dateTime,
-        allDay: e.isAllDay,
-        location: e.location?.displayName || "",
-        online: !!e.onlineMeeting?.joinUrl,
-        attendees: (e.attendees || [])
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .map((a: any) => a.emailAddress?.name)
-          .filter(Boolean)
-          .slice(0, 5),
-      }));
-    }, []);
-
-    // --- Recent documents (OneDrive/SharePoint) ---
-    const docs = await safe(async () => {
-      const r = await fetch(`${GRAPH}/drive/recent?$top=8`, {
-        headers: authH(t),
-      });
-      if (!r.ok) return [];
-      const d = await r.json();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (d.value || [])
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .filter((f: any) => f.name)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((f: any) => ({
-          name: f.name,
-          url: f.webUrl,
-          modified: f.lastModifiedDateTime,
-        }))
-        .slice(0, 6);
-    }, []);
-
-    // --- Recent sent mail ---
-    const sent = await safe(async () => {
-      const r = await fetch(
-        `${GRAPH}/mailFolders/sentitems/messages?$top=5&$orderby=sentDateTime desc&$select=subject,toRecipients,sentDateTime`,
-        { headers: authH(t) }
-      );
-      if (!r.ok) return [];
-      const d = await r.json();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (d.value || []).map((m: any) => ({
-        subject: m.subject,
-        to: m.toRecipients?.[0]?.emailAddress?.name || "",
-        sent: m.sentDateTime,
-      }));
-    }, []);
-
-    // --- Priority inbox (top unread-ish, ranked) ---
-    const priority = await safe(async () => {
-      const r = await fetch(
-        `${GRAPH}/mailFolders/inbox/messages?$top=15&$orderby=receivedDateTime desc&$select=id,subject,from,bodyPreview,receivedDateTime`,
-        { headers: authH(t) }
-      );
-      if (!r.ok) return [];
-      const d = await r.json();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const msgs = (d.value || []).map((m: any) => ({
-        id: m.id,
-        from: m.from?.emailAddress?.name || m.from?.emailAddress?.address || "",
-        subject: m.subject || "",
-        preview: (m.bodyPreview || "").slice(0, 160),
-        received: m.receivedDateTime,
-      }));
-      if (!msgs.length) return [];
-      const compact = msgs
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((m: any, i: number) => `${i}. ${m.from} | ${m.subject} | ${m.preview}`)
-        .join("\n");
-      const raw = await askClaude(
-        `Pick the emails that genuinely need the owner's attention (a real person awaiting a reply, time-sensitive, money/contracts). Ignore newsletters, promotions, automated noise. Return ONLY a JSON array of the important ones: [{"i":0,"reason":"4-7 words"}]. Max 6.\n\n${compact}`,
-        500
-      );
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let picks: any[] = [];
-      try {
-        picks = JSON.parse(raw.replace(/```json|```/g, "").trim());
-      } catch {
-        picks = [];
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return picks
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .filter((p: any) => typeof p.i === "number" && msgs[p.i])
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((p: any) => ({ ...msgs[p.i], reason: p.reason }));
-    }, []);
-
-    const settings = await safe(() => getSettings(), {
-      quick_links: [],
-    });
-
-    // --- Morning brief ---
-    const brief = await safe(async () => {
-      const calLine = calendar.length
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ? calendar.map((c: any) => `${c.subject} (${c.start})`).join("; ")
-        : "no meetings";
-      const mailLine = priority.length
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ? priority.map((m: any) => `${m.from}: ${m.subject}`).join("; ")
-        : "nothing urgent";
-      return await askClaude(
-        `You are Chris's executive assistant. Write a warm, concise morning brief (2-3 sentences, no greeting like "Good morning Chris," just dive in). Mention the shape of the day and what most needs attention. Be specific but brief.\n\nToday's meetings: ${calLine}\nNeeds attention: ${mailLine}`,
-        250
-      );
-    }, "");
-
-    return NextResponse.json({
-      success: true,
-      brief,
-      calendar,
-      docs,
-      sent,
-      priority,
-      quick_links: settings.quick_links || [],
-    });
-  } catch (e) {
-    return NextResponse.json(
-      { success: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 500 }
-    );
-  }
 }
