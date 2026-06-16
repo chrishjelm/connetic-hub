@@ -46,7 +46,9 @@ function senderName(m: MsgSummary): string {
   );
 }
 
-export default function Inbox() {
+import { Suspense } from "react";
+
+function InboxInner() {
   const [folder, setFolder] = useState("inbox");
   const [list, setList] = useState<MsgSummary[] | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
@@ -734,6 +736,14 @@ export default function Inbox() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function Inbox() {
+  return (
+    <Suspense fallback={<div style={{ padding: 40, color: "var(--text-muted)" }}>Loading…</div>}>
+      <InboxInner />
+    </Suspense>
   );
 }
 
