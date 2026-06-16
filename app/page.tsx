@@ -27,14 +27,49 @@ function dayLabel(iso?: string): string {
 export default function HomePage() {
   const [data, setData] = useState<Home | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [followups, setFollowups] = useState<any | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [fuBusy, setFuBusy] = useState<string | null>(null);
 
   function load() {
     setData(null);
     setErr(null);
+    setFollowups(null);
     fetch("/api/home")
       .then((r) => r.json())
       .then((d) => (d.success ? setData(d) : setErr(d.error || "Failed to load")))
       .catch((e) => setErr(String(e)));
+    fetch("/api/followups")
+      .then((r) => r.json())
+      .then((d) => setFollowups(d.success ? d : { waiting_on_them: [], waiting_on_you: [] }))
+      .catch(() => setFollowups({ waiting_on_them: [], waiting_on_you: [] }));
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function resolveFu(item: any, action: "done" | "snooze") {
+    setFuBusy(item.conversation_id + action);
+    try {
+      await fetch("/api/followups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: action === "snooze" ? "snooze" : "done",
+          days: 3,
+          conversation_id: item.conversation_id,
+          direction: item.direction,
+          counterpart: item.counterpart,
+          subject: item.subject,
+        }),
+      });
+      setFollowups((f: typeof followups) => {
+        if (!f) return f;
+        const filt = (arr: typeof f.waiting_on_them) => arr.filter((x: { conversation_id: string }) => x.conversation_id !== item.conversation_id);
+        return { ...f, waiting_on_them: filt(f.waiting_on_them), waiting_on_you: filt(f.waiting_on_you) };
+      });
+    } finally {
+      setFuBusy(null);
+    }
   }
 
   useEffect(load, []);
@@ -93,6 +128,20 @@ export default function HomePage() {
         </div>
       </div>
 
+      {data && (
+        <div style={{ ...card, padding: 20, marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <h2 style={sectionH}>What needs you today</h2>
+            <a href="/inbox" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>Open inbox →</a>
+          </div>
+          {data.priority?.length === 0 && <Muted>Nothing needs you right now. Clear runway.</Muted>}
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {data.priority?.map((m: any, i: number) => (
+            <PriorityRow key={m.id} m={m} last={i === data.priority.length - 1} />
+          ))}
+        </div>
+      )}
+
       {data?.quick_links?.length > 0 && (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
@@ -101,6 +150,30 @@ export default function HomePage() {
               {l.label}
             </a>
           ))}
+        </div>
+      )}
+
+      {followups && (followups.waiting_on_them.length > 0 || followups.waiting_on_you.length > 0) && (
+        <div style={{ ...card, padding: 20, marginBottom: 20, borderLeft: "3px solid var(--amber)" }}>
+          <h2 style={sectionH}>Needs follow-up</h2>
+          {followups.waiting_on_them.length > 0 && (
+            <div style={{ marginBottom: followups.waiting_on_you.length ? 14 : 0 }}>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Waiting on them</div>
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+              {followups.waiting_on_them.map((f: any, i: number) => (
+                <FollowupRow key={f.conversation_id} f={f} last={i === followups.waiting_on_them.length - 1} busy={fuBusy} onResolve={resolveFu} nudge />
+              ))}
+            </div>
+          )}
+          {followups.waiting_on_you.length > 0 && (
+            <div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Waiting on you</div>
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+              {followups.waiting_on_you.map((f: any, i: number) => (
+                <FollowupRow key={f.conversation_id} f={f} last={i === followups.waiting_on_you.length - 1} busy={fuBusy} onResolve={resolveFu} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -141,29 +214,6 @@ export default function HomePage() {
         </section>
 
         <section style={{ ...card, padding: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <h2 style={sectionH}>What needs you</h2>
-            <a href="/inbox" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>Inbox →</a>
-          </div>
-          {!data && <Muted>Loading…</Muted>}
-          {data && data.priority?.length === 0 && <Muted>Nothing urgent. Nice.</Muted>}
-          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-          {data?.priority?.map((m: any, i: number) => (
-            <div key={m.id} style={rowStyle(i === data.priority.length - 1)}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {m.from}
-                </div>
-                <div style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {m.subject}
-                </div>
-                {m.reason && <div style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>{m.reason}</div>}
-              </div>
-            </div>
-          ))}
-        </section>
-
-        <section style={{ ...card, padding: 20 }}>
           <h2 style={sectionH}>Recent documents</h2>
           {!data && <Muted>Loading…</Muted>}
           {data && data.docs?.length === 0 && <Muted>No recent files.</Muted>}
@@ -192,6 +242,80 @@ export default function HomePage() {
             </div>
           ))}
         </section>
+      </div>
+    </div>
+  );
+}
+
+function FollowupRow({
+  f, last, busy, onResolve, nudge,
+}: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  f: any;
+  last: boolean;
+  busy: string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onResolve: (f: any, action: "done" | "snooze") => void;
+  nudge?: boolean;
+}) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 0", borderBottom: last ? "none" : "1px solid var(--border)" }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {f.counterpart}
+          <span style={{ fontSize: 11, fontWeight: 400, color: "var(--amber)", marginLeft: 8 }}>{f.days}d</span>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.subject}</div>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+        {nudge && (
+          <a
+            href={`/ask?q=${encodeURIComponent(`Draft a follow-up to ${f.counterpart} about "${f.subject}" — I haven't heard back.`)}`}
+            style={fuBtnAccent}
+          >
+            Nudge
+          </a>
+        )}
+        <button onClick={() => onResolve(f, "done")} disabled={!!busy} style={fuBtn}>Done</button>
+        <button onClick={() => onResolve(f, "snooze")} disabled={!!busy} style={fuBtn}>Snooze</button>
+      </div>
+    </div>
+  );
+}
+
+function PriorityRow({ m, last }: { m: { id: string; from: string; subject: string; reason?: string; action?: string }; last: boolean }) {
+  const action = m.action || "review";
+  const badge =
+    action === "reply"
+      ? { label: "Reply", bg: "var(--accent-dim)", fg: "var(--accent)", border: "var(--accent)" }
+      : action === "fyi"
+      ? { label: "FYI", bg: "var(--surface-2)", fg: "var(--text-muted)", border: "var(--border)" }
+      : { label: "Review", bg: "var(--surface-2)", fg: "var(--amber)", border: "var(--amber)" };
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px 0", borderBottom: last ? "none" : "1px solid var(--border)" }}>
+      <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: badge.fg, background: badge.bg, border: `1px solid ${badge.border}`, borderRadius: 5, padding: "3px 7px", marginTop: 1 }}>
+        {badge.label}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {m.from}
+        </div>
+        <div style={{ fontSize: 13, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {m.subject}
+        </div>
+        {m.reason && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{m.reason}</div>}
+      </div>
+      <div style={{ flexShrink: 0 }}>
+        {action === "reply" ? (
+          <a
+            href={`/ask?q=${encodeURIComponent(`Draft a reply to ${m.from} about "${m.subject}".`)}`}
+            style={fuBtnAccent}
+          >
+            Draft reply
+          </a>
+        ) : (
+          <a href="/inbox" style={{ ...fuBtn, textDecoration: "none" }}>Open</a>
+        )}
       </div>
     </div>
   );
@@ -242,4 +366,27 @@ const quickLink: React.CSSProperties = {
   color: "var(--text-primary)",
   border: "1px solid var(--border)",
   textDecoration: "none",
+};
+
+const fuBtn: React.CSSProperties = {
+  padding: "5px 11px",
+  borderRadius: 7,
+  fontSize: 12,
+  fontWeight: 500,
+  cursor: "pointer",
+  background: "var(--surface-2)",
+  color: "var(--text-secondary)",
+  border: "1px solid var(--border)",
+};
+const fuBtnAccent: React.CSSProperties = {
+  padding: "5px 12px",
+  borderRadius: 7,
+  fontSize: 12,
+  fontWeight: 600,
+  background: "var(--accent)",
+  color: "#fff",
+  border: "none",
+  textDecoration: "none",
+  display: "inline-flex",
+  alignItems: "center",
 };
