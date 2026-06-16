@@ -11,7 +11,7 @@ import {
 } from "@/lib/routing";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 const GRAPH = "https://graph.microsoft.com/v1.0/me";
 
@@ -182,7 +182,7 @@ Body: ${msg.body || msg.bodyPreview}`;
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
+      model: process.env.ANTHROPIC_MODEL || "claude-haiku-4-5",
       max_tokens: 600,
       messages: [{ role: "user", content: prompt }],
     }),
