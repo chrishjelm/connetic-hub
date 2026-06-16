@@ -27,12 +27,23 @@ const FOLDERS = [
   { key: "sentitems", label: "Sent" },
 ];
 
-// Slice 1: in-inbox views layered on top of the inbox folder.
-type ViewKey = "all" | "important";
+// Slice 1+3: in-inbox views layered on top of the inbox folder.
+type ViewKey = "all" | "important" | "followup" | "queue";
 const VIEWS: { key: ViewKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "important", label: "Important" },
+  { key: "followup", label: "Follow-up" },
+  { key: "queue", label: "AI Queue" },
 ];
+
+type OpenLoop = {
+  conversation_id: string;
+  direction: "waiting_on_them" | "waiting_on_you";
+  counterpart: string;
+  subject: string;
+  last_activity: string;
+  days: number;
+};
 
 // Per-message metadata the page tracks locally (not persisted server-side).
 type MsgMeta = {
@@ -71,6 +82,8 @@ function InboxInner() {
   const [view, setView] = useState<ViewKey>("all");
   const [meta, setMeta] = useState<Record<string, MsgMeta>>({});
   const [prioritizing, setPrioritizing] = useState(false);
+  const [loops, setLoops] = useState<OpenLoop[] | null>(null);
+  const [loopsLoading, setLoopsLoading] = useState(false);
   const [list, setList] = useState<MsgSummary[] | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
 
@@ -108,6 +121,7 @@ function InboxInner() {
     setSel(null);
     setMeta({});
     setView("all");
+    setLoops(null);
     fetch(`/api/outlook-mail?folder=${f}`)
       .then((r) => r.json())
       .then((d) => {
@@ -150,6 +164,19 @@ function InboxInner() {
       .finally(() => setPrioritizing(false));
   }, []);
 
+  // Slice 3: load open loops (follow-ups) lazily, only when a view needs them.
+  const fetchLoops = useCallback(() => {
+    setLoopsLoading(true);
+    fetch("/api/followups")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.success && Array.isArray(d.loops)) setLoops(d.loops);
+        else setLoops([]);
+      })
+      .catch(() => setLoops([]))
+      .finally(() => setLoopsLoading(false));
+  }, []);
+
   const searchParams = useSearchParams();
 
   useEffect(() => {
@@ -163,6 +190,18 @@ function InboxInner() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list, folder]);
+
+  // Load open loops the first time a view that needs them is opened.
+  useEffect(() => {
+    if (
+      (view === "followup" || view === "queue") &&
+      loops === null &&
+      !loopsLoading
+    ) {
+      fetchLoops();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
 
   // Deep-link: if ?id= is in the URL, auto-open that message.
   useEffect(() => {
@@ -432,12 +471,29 @@ function InboxInner() {
           {folder === "inbox" && (
             <div style={{ display: "flex", gap: 4, marginLeft: 6 }}>
               {VIEWS.map((v) => {
-                const count =
-                  v.key === "all"
-                    ? list?.length || 0
-                    : (list || []).filter(
-                        (m) => meta[m.id]?.priority === "high"
-                      ).length;
+                const waitingOnYou = (loops || []).filter(
+                  (l) => l.direction === "waiting_on_you"
+                ).length;
+                let count = 0;
+                if (v.key === "all") count = list?.length || 0;
+                else if (v.key === "important")
+                  count = (list || []).filter(
+                    (m) => meta[m.id]?.priority === "high"
+                  ).length;
+                else if (v.key === "followup") count = waitingOnYou;
+                else if (v.key === "queue")
+                  count =
+                    waitingOnYou +
+                    (list || []).filter((m) => meta[m.id]?.priority === "high")
+                      .length;
+                const showCount =
+                  (v.key === "important" ||
+                    v.key === "followup" ||
+                    v.key === "queue") &&
+                  count > 0;
+                const showSpin =
+                  (v.key === "important" && prioritizing) ||
+                  ((v.key === "followup" || v.key === "queue") && loopsLoading);
                 return (
                   <button
                     key={v.key}
@@ -456,8 +512,8 @@ function InboxInner() {
                     }}
                   >
                     {v.label}
-                    {v.key === "important" && count > 0 ? ` (${count})` : ""}
-                    {v.key === "important" && prioritizing ? " …" : ""}
+                    {showCount ? ` (${count})` : ""}
+                    {showSpin ? " …" : ""}
                   </button>
                 );
               })}
@@ -507,6 +563,86 @@ function InboxInner() {
               Nothing here.
             </div>
           )}
+          {/* Follow-up / AI Queue views render open loops, not folder messages. */}
+          {folder === "inbox" && (view === "followup" || view === "queue") ? (
+            <>
+              {loopsLoading && loops === null && (
+                <div style={{ padding: 20, color: "var(--text-muted)", fontSize: 13 }}>
+                  Scanning for open threads…
+                </div>
+              )}
+              {loops && (() => {
+                const shown =
+                  view === "followup"
+                    ? loops.filter((l) => l.direction === "waiting_on_you")
+                    : loops.filter((l) => l.direction === "waiting_on_you");
+                if (shown.length === 0) {
+                  return (
+                    <div style={{ padding: 20, color: "var(--text-muted)", fontSize: 13 }}>
+                      {view === "followup"
+                        ? "No threads waiting on a reply from you."
+                        : "Nothing in the queue right now."}
+                    </div>
+                  );
+                }
+                return shown.map((l) => (
+                  <div
+                    key={l.conversation_id}
+                    style={{
+                      padding: "13px 18px",
+                      borderBottom: "1px solid var(--border)",
+                      borderLeft: `3px solid ${
+                        l.days >= 7 ? "var(--amber)" : "transparent"
+                      }`,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        marginBottom: 3,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: "var(--text-primary)",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {l.counterpart}
+                      </span>
+                      <span
+                        style={{ fontSize: 11, color: "var(--amber)", flexShrink: 0 }}
+                      >
+                        {l.days}d
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "var(--text-secondary)",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {l.subject || "(no subject)"}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      Waiting on you · last activity{" "}
+                      {when(l.last_activity)}
+                    </div>
+                  </div>
+                ));
+              })()}
+            </>
+          ) : (
+          <>
           {list
             ?.filter((m) =>
               folder === "inbox" && view === "important"
@@ -580,6 +716,8 @@ function InboxInner() {
               </div>
             );
           })}
+          </>
+          )}
         </div>
 
         {/* Reader */}
