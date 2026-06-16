@@ -1,4 +1,4 @@
-import Pipeline from "@/app/components/Pipeline";
+import Pipeline from "@/app/components/pipeline";
 
 export const dynamic = "force-dynamic";
 
