@@ -96,6 +96,42 @@ export const VCAFX = {
 
 export type ForwardSuggestion = { recipient: string; email: string };
 
+// ---- Family senders -> your personal Gmail --------------------
+// These match on the SENDER (address or display name), not keywords.
+const PERSONAL_EMAIL = "chjelm88@gmail.com";
+
+// Known addresses (most reliable match).
+const FAMILY_ADDRESSES = [
+  "molly.hjelm@gmail.com",
+  "chris.hjelm@gmail.com",
+  "kmhjelm@aol.com",
+  "michelle.hjelm@gmail.com",
+  // TODO: add Connor Hjelm and Tom Eckardt addresses when known
+];
+
+// Display-name fallback for senders whose address may vary or isn't known yet.
+const FAMILY_NAMES = [
+  "karen hjelm",
+  "chris hjelm",
+  "molly hjelm",
+  "connor hjelm",
+  "michelle hjelm",
+  "tom eckardt",
+];
+
+export function matchFamilySender(
+  fromAddress: string,
+  fromName: string
+): ForwardSuggestion | null {
+  const addr = (fromAddress || "").toLowerCase().trim();
+  const name = (fromName || "").toLowerCase().trim();
+  const hit =
+    FAMILY_ADDRESSES.includes(addr) ||
+    FAMILY_NAMES.some((n) => name.includes(n));
+  if (!hit) return null;
+  return { recipient: "Personal (Gmail)", email: PERSONAL_EMAIL };
+}
+
 // Returns ordered, de-duplicated suggestions (most specific first).
 export function matchForwardRules(
   subject: string,
