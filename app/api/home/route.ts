@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSettings } from "@/lib/db";
+import { getSettings, sbSelect } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -157,6 +157,13 @@ export async function GET() {
 
     // --- Priority inbox (ranked, personalized, with a suggested action) ---
     const priority = await safe(async () => {
+      // Pull learned feedback: senders/patterns the user marked unhelpful.
+      const badFeedback = await sbSelect<{ from_email: string; from_name: string; subject_keyword: string }>(
+        `ch_priority_feedback?vote=eq.-1&select=from_email,from_name,subject_keyword&order=created_at.desc&limit=40`
+      ).catch(() => []);
+      const suppressedEmails = [...new Set(badFeedback.map((f) => f.from_email).filter(Boolean))];
+      const suppressedKeywords = [...new Set(badFeedback.map((f) => f.subject_keyword).filter(Boolean))];
+
       const r = await fetch(
         `${GRAPH}/mailFolders/inbox/messages?$top=22&$orderby=receivedDateTime desc&$select=id,subject,from,bodyPreview,receivedDateTime,isRead`,
         { headers: authH(t) }
@@ -181,11 +188,13 @@ export async function GET() {
       const ctx = [
         vipList.length ? `People the owner especially cares about (treat as high priority): ${vipList.join(", ")}.` : "",
         priorityNotes ? `The owner's standing priorities: ${priorityNotes}` : "",
+        suppressedEmails.length ? `The owner has indicated these senders are NOT worth surfacing (skip them unless truly urgent): ${suppressedEmails.slice(0, 15).join(", ")}.` : "",
+        suppressedKeywords.length ? `The owner has indicated messages about these topics are NOT useful to surface: ${suppressedKeywords.slice(0, 10).join(", ")}.` : "",
       ].filter(Boolean).join("\n");
       const raw = await askClaude(
-        `You are Chris Hjelm's chief of staff at Connetic Ventures (VCAFX fund). From the inbox below, pick ONLY the messages that genuinely need Chris today — a real person awaiting his reply, something time-sensitive, money/contracts/deals, or anyone in his VIP list. Ignore newsletters, promotions, receipts, and automated noise.
+        `You are Chris Hjelm's chief of staff at Connetic Ventures (VCAFX fund). From the inbox below, pick ONLY the messages that genuinely need Chris today — a real person awaiting his reply, something time-sensitive, money/contracts/deals, or anyone in his VIP list. Ignore newsletters, promotions, receipts, automated noise, and meeting reminders where no response is needed.
 ${ctx ? "\n" + ctx + "\n" : ""}
-For each one return: "i" (its number), "reason" (4-8 words on why it matters), and "action" (one of: "reply" if he should respond, "review" if he should read/decide, "fyi" if just worth knowing). Order by importance, most urgent first. Max 6.
+For each one return: "i" (its number), "reason" (4-8 words on why it matters), and "action" — use "reply" if Chris should respond, "review" if he should read/decide, "fyi" if just worth knowing. Order by importance, most urgent first. Max 6.
 Return ONLY a JSON array: [{"i":0,"reason":"...","action":"reply"}]
 
 ${compact}`,
