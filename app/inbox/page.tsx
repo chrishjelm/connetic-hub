@@ -27,6 +27,24 @@ const FOLDERS = [
   { key: "sentitems", label: "Sent" },
 ];
 
+// Slice 1: in-inbox views layered on top of the inbox folder.
+type ViewKey = "all" | "important";
+const VIEWS: { key: ViewKey; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "important", label: "Important" },
+];
+
+// Per-message metadata the page tracks locally (not persisted server-side).
+type MsgMeta = {
+  priority?: "high" | "medium" | "low";
+  reason?: string;
+};
+
+function rowAccent(priority?: string): string {
+  if (priority === "high") return "var(--amber)";
+  return "transparent";
+}
+
 function when(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -50,6 +68,9 @@ import { Suspense } from "react";
 
 function InboxInner() {
   const [folder, setFolder] = useState("inbox");
+  const [view, setView] = useState<ViewKey>("all");
+  const [meta, setMeta] = useState<Record<string, MsgMeta>>({});
+  const [prioritizing, setPrioritizing] = useState(false);
   const [list, setList] = useState<MsgSummary[] | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
 
@@ -81,6 +102,8 @@ function InboxInner() {
     setList(null);
     setListErr(null);
     setSel(null);
+    setMeta({});
+    setView("all");
     fetch(`/api/outlook-mail?folder=${f}`)
       .then((r) => r.json())
       .then((d) => {
@@ -90,11 +113,52 @@ function InboxInner() {
       .catch((e) => setListErr(String(e)));
   }, []);
 
+  // Slice 1: rank the inbox once it loads, so the Important view and
+  // the priority stripes have data. Only meaningful for the inbox folder.
+  const prioritize = useCallback(() => {
+    setPrioritizing(true);
+    fetch("/api/outlook-mail", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "prioritize" }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.success && Array.isArray(d.messages)) {
+          setMeta((prev) => {
+            const next = { ...prev };
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            for (const m of d.messages as any[]) {
+              if (!m.id) continue;
+              next[m.id] = {
+                ...next[m.id],
+                priority: m.priority,
+                reason: m.reason,
+              };
+            }
+            return next;
+          });
+        }
+      })
+      .catch(() => {
+        /* non-critical: stripes just won't show */
+      })
+      .finally(() => setPrioritizing(false));
+  }, []);
+
   const searchParams = useSearchParams();
 
   useEffect(() => {
     loadList(folder);
   }, [folder, loadList]);
+
+  // Once the inbox list is in, rank it (inbox only).
+  useEffect(() => {
+    if (folder === "inbox" && list && list.length > 0) {
+      prioritize();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list, folder]);
 
   // Deep-link: if ?id= is in the URL, auto-open that message.
   useEffect(() => {
@@ -340,6 +404,40 @@ function InboxInner() {
               </button>
             ))}
           </div>
+          {folder === "inbox" && (
+            <div style={{ display: "flex", gap: 4, marginLeft: 6 }}>
+              {VIEWS.map((v) => {
+                const count =
+                  v.key === "all"
+                    ? list?.length || 0
+                    : (list || []).filter(
+                        (m) => meta[m.id]?.priority === "high"
+                      ).length;
+                return (
+                  <button
+                    key={v.key}
+                    onClick={() => setView(v.key)}
+                    style={{
+                      padding: "5px 12px",
+                      borderRadius: 7,
+                      fontSize: 13,
+                      border: "none",
+                      cursor: "pointer",
+                      background:
+                        view === v.key ? "var(--accent)" : "transparent",
+                      color:
+                        view === v.key ? "#fff" : "var(--text-secondary)",
+                      fontWeight: view === v.key ? 500 : 400,
+                    }}
+                  >
+                    {v.label}
+                    {v.key === "important" && count > 0 ? ` (${count})` : ""}
+                    {v.key === "important" && prioritizing ? " …" : ""}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button
@@ -384,8 +482,15 @@ function InboxInner() {
               Nothing here.
             </div>
           )}
-          {list?.map((m) => {
+          {list
+            ?.filter((m) =>
+              folder === "inbox" && view === "important"
+                ? meta[m.id]?.priority === "high"
+                : true
+            )
+            .map((m) => {
             const active = sel?.id === m.id;
+            const accent = rowAccent(meta[m.id]?.priority);
             return (
               <div
                 key={m.id}
@@ -393,6 +498,7 @@ function InboxInner() {
                 style={{
                   padding: "13px 18px",
                   borderBottom: "1px solid var(--border)",
+                  borderLeft: `3px solid ${accent}`,
                   cursor: "pointer",
                   background: active ? "var(--surface-2)" : "transparent",
                 }}
