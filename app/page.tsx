@@ -27,6 +27,7 @@ function dayLabel(iso?: string): string {
 export default function HomePage() {
   const [data, setData] = useState<Home | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [followups, setFollowups] = useState<any | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,6 +37,7 @@ export default function HomePage() {
     setData(null);
     setErr(null);
     setFollowups(null);
+    setRemovedIds(new Set());
     fetch("/api/home")
       .then((r) => r.json())
       .then((d) => (d.success ? setData(d) : setErr(d.error || "Failed to load")))
@@ -73,6 +75,10 @@ export default function HomePage() {
   }
 
   useEffect(load, []);
+
+  function removeId(id: string) {
+    setRemovedIds((prev) => new Set([...prev, id]));
+  }
 
   const greeting = (() => {
     const h = new Date().getHours();
@@ -134,11 +140,13 @@ export default function HomePage() {
             <h2 style={sectionH}>What needs you today</h2>
             <a href="/inbox" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>Open inbox →</a>
           </div>
-          {data.priority?.length === 0 && <Muted>Nothing needs you right now. Clear runway.</Muted>}
-          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-          {data.priority?.map((m: any, i: number) => (
-            <PriorityRow key={m.id} m={m} last={i === data.priority.length - 1} />
-          ))}
+          {(() => {
+            const visible = (data.priority || []).filter((m: { id: string }) => !removedIds.has(m.id));
+            if (visible.length === 0) return <Muted>Nothing needs you right now. Clear runway.</Muted>;
+            return visible.map((m: { id: string; from: string; fromEmail?: string; subject: string; reason?: string; action?: string }, i: number) => (
+              <PriorityRow key={m.id} m={m} last={i === visible.length - 1} onRemove={removeId} />
+            ));
+          })()}
         </div>
       )}
 
@@ -283,7 +291,13 @@ function FollowupRow({
   );
 }
 
-function PriorityRow({ m, last }: { m: { id: string; from: string; subject: string; reason?: string; action?: string }; last: boolean }) {
+function PriorityRow({ m, last, onRemove }: {
+  m: { id: string; from: string; fromEmail?: string; subject: string; reason?: string; action?: string };
+  last: boolean;
+  onRemove: (id: string) => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [voted, setVoted] = useState<number | null>(null);
   const action = m.action || "review";
   const badge =
     action === "reply"
@@ -291,9 +305,35 @@ function PriorityRow({ m, last }: { m: { id: string; from: string; subject: stri
       : action === "fyi"
       ? { label: "FYI", bg: "var(--surface-2)", fg: "var(--text-muted)", border: "var(--border)" }
       : { label: "Review", bg: "var(--surface-2)", fg: "var(--amber)", border: "var(--amber)" };
+
+  async function act(a: string) {
+    setBusy(a);
+    try {
+      await fetch("/api/priority-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: a, messageId: m.id, fromEmail: m.fromEmail, fromName: m.from, subject: m.subject }),
+      });
+      onRemove(m.id);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function thumb(vote: number) {
+    setVoted(vote);
+    await fetch("/api/priority-feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "feedback", messageId: m.id, fromEmail: m.fromEmail, fromName: m.from, subject: m.subject, vote }),
+    }).catch(() => {});
+    // Thumbs down also removes from list
+    if (vote === -1) setTimeout(() => onRemove(m.id), 400);
+  }
+
   return (
-    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px 0", borderBottom: last ? "none" : "1px solid var(--border)" }}>
-      <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: badge.fg, background: badge.bg, border: `1px solid ${badge.border}`, borderRadius: 5, padding: "3px 7px", marginTop: 1 }}>
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "13px 0", borderBottom: last ? "none" : "1px solid var(--border)" }}>
+      <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: badge.fg, background: badge.bg, border: `1px solid ${badge.border}`, borderRadius: 5, padding: "3px 7px", marginTop: 2 }}>
         {badge.label}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -304,18 +344,39 @@ function PriorityRow({ m, last }: { m: { id: string; from: string; subject: stri
           {m.subject}
         </div>
         {m.reason && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{m.reason}</div>}
-      </div>
-      <div style={{ flexShrink: 0 }}>
-        {action === "reply" ? (
+        <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
           <a
             href={`/ask?q=${encodeURIComponent(`Draft a reply to ${m.from} about "${m.subject}".`)}`}
-            style={fuBtnAccent}
+            style={actionBtn}
           >
-            Draft reply
+            ✦ Draft reply
           </a>
-        ) : (
-          <a href="/inbox" style={{ ...fuBtn, textDecoration: "none" }}>Open</a>
-        )}
+          <a
+            href={`/inbox?id=${m.id}`}
+            style={actionBtn}
+          >
+            Open
+          </a>
+          <button onClick={() => act("archive")} disabled={!!busy} style={actionBtn}>
+            {busy === "archive" ? "…" : "Archive"}
+          </button>
+          <button onClick={() => act("markRead")} disabled={!!busy} style={{ ...actionBtn, color: "var(--text-muted)" }}>
+            {busy === "markRead" ? "…" : "Done"}
+          </button>
+          {/* thumbs */}
+          <button
+            onClick={() => thumb(1)}
+            disabled={voted !== null}
+            title="Useful — keep surfacing this"
+            style={{ ...actionBtn, color: voted === 1 ? "var(--green)" : "var(--text-muted)", fontSize: 14 }}
+          >👍</button>
+          <button
+            onClick={() => thumb(-1)}
+            disabled={voted !== null}
+            title="Not useful — stop surfacing this sender"
+            style={{ ...actionBtn, color: voted === -1 ? "var(--amber)" : "var(--text-muted)", fontSize: 14 }}
+          >👎</button>
+        </div>
       </div>
     </div>
   );
@@ -386,6 +447,19 @@ const fuBtnAccent: React.CSSProperties = {
   background: "var(--accent)",
   color: "#fff",
   border: "none",
+  textDecoration: "none",
+  display: "inline-flex",
+  alignItems: "center",
+};
+const actionBtn: React.CSSProperties = {
+  padding: "4px 10px",
+  borderRadius: 6,
+  fontSize: 12,
+  fontWeight: 500,
+  cursor: "pointer",
+  background: "var(--surface-2)",
+  color: "var(--text-secondary)",
+  border: "1px solid var(--border)",
   textDecoration: "none",
   display: "inline-flex",
   alignItems: "center",
