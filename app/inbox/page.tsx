@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 
 type Unsub = { available: boolean; oneClick: boolean; url: string; mailto: string };
 
@@ -87,9 +88,19 @@ export default function Inbox() {
       .catch((e) => setListErr(String(e)));
   }, []);
 
+  const searchParams = useSearchParams();
+
   useEffect(() => {
     loadList(folder);
   }, [folder, loadList]);
+
+  // Deep-link: if ?id= is in the URL, auto-open that message.
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (!id) return;
+    open({ id } as MsgSummary);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   async function open(m: MsgSummary) {
     setSelLoading(true);
