@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import {
   AUTO_SEND,
+  AUTO_UNSUBSCRIBE,
+  UNSUBSCRIBE_CATEGORIES,
   CATEGORIES,
   FORWARD_RULES,
   ARCHIVE_CATEGORIES,
@@ -9,7 +11,7 @@ import {
 } from "@/lib/routing";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -118,7 +120,47 @@ async function getMessage(token: string, id: string) {
     subject: header(headers, "Subject"),
     snippet: (msg.snippet as string) || "",
     body: extractBody(msg.payload).slice(0, 4000),
+    listUnsubscribe: header(headers, "List-Unsubscribe"),
+    listUnsubscribePost: header(headers, "List-Unsubscribe-Post"),
   };
+}
+
+// ---- Unsubscribe (safe, standards-based) -----------------------
+// Uses the List-Unsubscribe header. Only AUTO-acts via the RFC 8058
+// one-click POST flow, which is the same safe mechanism Gmail's own
+// Unsubscribe button uses. Anything else is reported for manual review.
+async function handleUnsubscribe(msg: {
+  listUnsubscribe: string;
+  listUnsubscribePost: string;
+}): Promise<{ acted: boolean; note: string } | null> {
+  if (!msg.listUnsubscribe) return null;
+
+  const urls = [...msg.listUnsubscribe.matchAll(/<([^>]+)>/g)].map((m) => m[1]);
+  const https = urls.find((u) => u.toLowerCase().startsWith("http"));
+  const mailto = urls.find((u) => u.toLowerCase().startsWith("mailto:"));
+  const oneClick = /one-click/i.test(msg.listUnsubscribePost || "");
+
+  // Safe automatic path: one-click POST.
+  if (AUTO_UNSUBSCRIBE && https && oneClick) {
+    try {
+      const r = await fetch(https, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "List-Unsubscribe=One-Click",
+      });
+      return r.ok
+        ? { acted: true, note: "unsubscribed (one-click)" }
+        : { acted: false, note: `one-click POST failed (${r.status})` };
+    } catch {
+      return { acted: false, note: "one-click POST errored" };
+    }
+  }
+
+  // Otherwise just describe what's available — no auto-action.
+  if (https && oneClick) return { acted: false, note: "one-click available (review mode)" };
+  if (https) return { acted: false, note: "manual unsubscribe link only" };
+  if (mailto) return { acted: false, note: "email-based unsubscribe only" };
+  return null;
 }
 
 // ---- Classification (Claude) -----------------------------------
@@ -162,7 +204,7 @@ Body: ${msg.body || msg.snippet}`;
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
+      model: process.env.ANTHROPIC_MODEL || "claude-haiku-4-5",
       max_tokens: 600,
       messages: [{ role: "user", content: prompt }],
     }),
@@ -237,7 +279,12 @@ export async function GET() {
   try {
     const token = await getAccessToken();
 
-    const labelNames = ["Triaged", ...CATEGORIES.map((c) => `Triage/${c}`)];
+    const labelNames = [
+      "Triaged",
+      "Triage/unsubscribe-candidate",
+      "Triage/unsubscribed",
+      ...CATEGORIES.map((c) => `Triage/${c}`),
+    ];
     const labelMap = await ensureLabels(token, labelNames);
 
     const ids = await listUntriaged(token);
@@ -254,6 +301,20 @@ export async function GET() {
       if (catLabel) {
         add.push(catLabel);
         did.push(`labeled ${verdict.category}`);
+      }
+
+      // Unsubscribe handling (only for eligible categories).
+      if (UNSUBSCRIBE_CATEGORIES.includes(verdict.category)) {
+        const result = await handleUnsubscribe(msg);
+        if (result) {
+          if (result.acted) {
+            add.push(labelMap["Triage/unsubscribed"]);
+            did.push(result.note);
+          } else {
+            add.push(labelMap["Triage/unsubscribe-candidate"]);
+            did.push(`unsub: ${result.note}`);
+          }
+        }
       }
 
       if (ARCHIVE_CATEGORIES.includes(verdict.category)) {
@@ -277,14 +338,11 @@ export async function GET() {
           threadId: msg.threadId,
         });
         did.push("drafted reply");
-        // NOTE: when AUTO_SEND is true you can wire an actual send here.
       }
 
       const fwd = FORWARD_RULES[verdict.category];
       if (fwd && fwd.length) {
-        const valid = fwd.filter(
-          (a) => a && !a.startsWith("REPLACE_WITH")
-        );
+        const valid = fwd.filter((a) => a && !a.startsWith("REPLACE_WITH"));
         if (valid.length) {
           await createDraft(token, {
             to: valid.join(", "),
@@ -313,6 +371,7 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       auto_send: AUTO_SEND,
+      auto_unsubscribe: AUTO_UNSUBSCRIBE,
       scanned: ids.length,
       actions,
     });
