@@ -12,7 +12,10 @@ export const maxDuration = 60;
 export async function GET() {
   try {
     const loops = await detectOpenLoops();
-    return NextResponse.json({ success: true, loops });
+    // The home + inbox pages expect loops grouped by direction.
+    const waiting_on_them = loops.filter((l) => l.direction === "waiting_on_them");
+    const waiting_on_you = loops.filter((l) => l.direction === "waiting_on_you");
+    return NextResponse.json({ success: true, loops, waiting_on_them, waiting_on_you });
   } catch (e) {
     return NextResponse.json(
       { success: false, error: e instanceof Error ? e.message : String(e) },
